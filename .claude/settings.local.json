@@ -2,7 +2,15 @@
   "permissions": {
     "allow": [
       "Bash(find:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(docker logs:*)",
+      "Bash(rm:*)",
+      "Bash(curl:*)",
+      "Bash(npm install:*)",
+      "Bash(docker exec:*)",
+      "Bash(docker-compose up:*)",
+      "Bash(docker-compose:*)",
+      "Bash(git add:*)"
     ],
     "deny": []
   }

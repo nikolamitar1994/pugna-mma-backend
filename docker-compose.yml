@@ -6,8 +6,22 @@ services:
       - "3000:3000"
     environment:
       - NODE_ENV=development
+      - PORT=3000
+      - API_VERSION=v1
       - DATABASE_URL=postgresql://mma_user:mma_password@postgres:5432/mma_database
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_NAME=mma_database
+      - DATABASE_USER=mma_user
+      - DATABASE_PASSWORD=mma_password
       - REDIS_URL=redis://redis:6379
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=your-super-secret-jwt-key-change-this-in-production-32-chars-minimum
+      - JWT_EXPIRES_IN=15m
+      - JWT_REFRESH_SECRET=your-super-secret-refresh-key-change-this-in-production-32-chars
+      - JWT_REFRESH_EXPIRES_IN=7d
+      - LOG_LEVEL=debug
     depends_on:
       postgres:
         condition: service_healthy
@@ -27,7 +41,7 @@ services:
       POSTGRES_USER: mma_user
       POSTGRES_PASSWORD: mma_password
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql

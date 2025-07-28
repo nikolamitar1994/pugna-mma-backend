@@ -1,3 +1,6 @@
+// Register module aliases for runtime path resolution
+import 'module-alias/register';
+
 import { App } from './app';
 import { config } from '@/config/environment';
 import { logger } from '@/utils/logger';
