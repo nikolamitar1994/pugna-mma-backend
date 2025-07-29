@@ -1,0 +1,18 @@
+<!-- RSS Feed Links for SEO -->
+{% load static %}
+
+<!-- Main RSS feed -->
+<link rel="alternate" type="application/rss+xml" title="MMA Database - Latest Articles" href="{% url 'content:latest_articles_feed' %}">
+
+<!-- Category-specific RSS feed -->
+{% if category %}
+<link rel="alternate" type="application/rss+xml" title="MMA Database - {{ category.name }}" href="{% url 'content:category_feed' category.slug %}">
+{% endif %}
+
+<!-- Tag-specific RSS feed -->
+{% if tag %}
+<link rel="alternate" type="application/rss+xml" title="MMA Database - {{ tag.name }} Articles" href="{% url 'content:tag_feed' tag.slug %}">
+{% endif %}
+
+<!-- Atom feed (alternative format) -->
+<link rel="alternate" type="application/atom+xml" title="MMA Database - Latest Articles (Atom)" href="{% url 'content:latest_articles_feed' %}">

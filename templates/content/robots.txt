@@ -1,0 +1,23 @@
+User-agent: *
+Allow: /
+
+# Sitemap location
+Sitemap: {{ request.scheme }}://{{ request.get_host }}/content/sitemap.xml
+
+# Allow search engines to crawl all content
+Allow: /api/articles/
+Allow: /content/
+Allow: /fighters/
+Allow: /events/
+Allow: /organizations/
+
+# Disallow admin and private areas
+Disallow: /admin/
+Disallow: /api/admin/
+Disallow: /api/auth/
+
+# Allow RSS feeds
+Allow: /content/feeds/
+
+# Crawl delay (optional, 1 second)
+Crawl-delay: 1

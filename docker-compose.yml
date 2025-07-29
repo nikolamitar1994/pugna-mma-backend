@@ -1,37 +1,82 @@
 services:
-  # Main application
-  app:
+  # Django application
+  web:
     build: .
     ports:
-      - "3000:3000"
+      - "8000:8000"
     environment:
-      - NODE_ENV=development
-      - PORT=3000
-      - API_VERSION=v1
-      - DATABASE_URL=postgresql://mma_user:mma_password@postgres:5432/mma_database
-      - DATABASE_HOST=postgres
-      - DATABASE_PORT=5432
-      - DATABASE_NAME=mma_database
-      - DATABASE_USER=mma_user
-      - DATABASE_PASSWORD=mma_password
-      - REDIS_URL=redis://redis:6379
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - JWT_SECRET=your-super-secret-jwt-key-change-this-in-production-32-chars-minimum
-      - JWT_EXPIRES_IN=15m
-      - JWT_REFRESH_SECRET=your-super-secret-refresh-key-change-this-in-production-32-chars
-      - JWT_REFRESH_EXPIRES_IN=7d
-      - LOG_LEVEL=debug
+      - DJANGO_ENVIRONMENT=development
+      - DEBUG=True
+      - SECRET_KEY=django-insecure-dev-key-change-in-production-please
+      - DB_NAME=mma_database
+      - DB_USER=mma_user
+      - DB_PASSWORD=mma_password
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - REDIS_URL=redis://redis:6379/1
+      - CORS_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     volumes:
-      - ./src:/app/src
-      - ./uploads:/app/uploads
+      - .:/app
+      - ./media:/app/media
+      - ./staticfiles:/app/staticfiles
     networks:
       - mma-network
+    command: ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+  
+  # Celery worker for background tasks
+  celery:
+    build: .
+    environment:
+      - DJANGO_ENVIRONMENT=development
+      - DEBUG=True
+      - SECRET_KEY=django-insecure-dev-key-change-in-production-please
+      - DB_NAME=mma_database
+      - DB_USER=mma_user
+      - DB_PASSWORD=mma_password
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - REDIS_URL=redis://redis:6379/1
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - .:/app
+    networks:
+      - mma-network
+    command: ["celery", "-A", "mma_backend", "worker", "--loglevel=info"]
+  
+  # Celery beat for scheduled tasks
+  celery-beat:
+    build: .
+    environment:
+      - DJANGO_ENVIRONMENT=development
+      - DEBUG=True
+      - SECRET_KEY=django-insecure-dev-key-change-in-production-please
+      - DB_NAME=mma_database
+      - DB_USER=mma_user
+      - DB_PASSWORD=mma_password
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - REDIS_URL=redis://redis:6379/1
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - .:/app
+    networks:
+      - mma-network
+    command: ["celery", "-A", "mma_backend", "beat", "--loglevel=info"]
 
   # PostgreSQL database
   postgres:

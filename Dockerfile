@@ -1,47 +1,50 @@
-# Multi-stage build for production optimization
-FROM node:20 AS builder
+# Django Production Dockerfile
+FROM python:3.11-slim
 
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV DJANGO_SETTINGS_MODULE=mma_backend.settings
+
+# Set work directory
 WORKDIR /app
 
-# Copy package files
-COPY package*.json ./
-COPY tsconfig.json ./
+# Install system dependencies
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        postgresql-client \
+        gcc \
+        python3-dev \
+        libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install all dependencies (including devDependencies for building)
-RUN npm ci
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy source code
-COPY src ./src
+# Copy project
+COPY . .
 
-# Build TypeScript
-RUN npm run build
+# Create non-root user
+RUN addgroup --system django \
+    && adduser --system --ingroup django django
 
-# Production stage
-FROM node:20 AS production
+# Create directories for static and media files
+RUN mkdir -p /app/staticfiles /app/media \
+    && chown -R django:django /app
 
-WORKDIR /app
+# Switch to non-root user
+USER django
 
-# Install production dependencies only
-COPY package*.json ./
-RUN npm ci --only=production && npm cache clean --force
-
-# Copy built application
-COPY --from=builder /app/dist ./dist
-
-# Create non-root user (Debian syntax)
-RUN groupadd --gid 1001 nodejs
-RUN useradd --uid 1001 --gid nodejs --shell /bin/bash --create-home nodejs
-
-# Change ownership of the app directory
-RUN chown -R nodejs:nodejs /app
-USER nodejs
+# Collect static files
+RUN python manage.py collectstatic --noinput || true
 
 # Expose port
-EXPOSE 3000
+EXPOSE 8000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD node dist/health-check.js
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:8000/health/', timeout=5)"
 
-# Start the application
-CMD ["node", "dist/index.js"]
+# Start application with Gunicorn
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "120", "mma_backend.wsgi:application"]
