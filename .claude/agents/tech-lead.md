@@ -226,7 +226,7 @@ graph TB
 - **Key Services:** Web Service, Background Workers, PostgreSQL, Redis
 - **Deployment Regions:** US-East (primary)
 
-### Technology Stack Table
+### Technology Stack Tablesd
 
 | Category | Technology | Version | Purpose | Rationale |
 |----------|------------|---------|---------|-----------|

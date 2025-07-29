@@ -47,7 +47,11 @@
       "Bash(docker volume rm:*)",
       "Bash(true)",
       "Bash(DJANGO_LOG_LEVEL=INFO timeout 10 python3 manage.py runserver 8001)",
-      "Bash(/dev/null)"
+      "Bash(/dev/null)",
+      "Bash(git push origin master)",
+      "Bash(cd:*)",
+      "Bash(git push:*)",
+      "Bash(cd:*)"
     ],
     "deny": []
   }
