@@ -630,3 +630,144 @@ class MediaScorecard(models.Model):
             return f"Fighter 2 by UD {self.fighter2_score}-{self.fighter1_score}"
         else:
             return f"Draw {self.fighter1_score}-{self.fighter2_score}"
+
+
+class FightStoryline(models.Model):
+    """Editorial storylines for all fights - rich content for fight promotion and analysis"""
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    fight = models.OneToOneField(Fight, on_delete=models.CASCADE, related_name='storyline')
+    
+    # Main storyline content
+    headline = models.CharField(max_length=255, help_text="Main headline for the fight storyline")
+    summary = models.TextField(help_text="Brief summary of the fight's significance")
+    
+    # Fighter backgrounds and stakes
+    fighter1_background = models.TextField(blank=True, help_text="Fighter 1's career background and journey to this fight")
+    fighter1_stakes = models.TextField(blank=True, help_text="What's at stake for Fighter 1")
+    fighter1_keys_to_victory = models.TextField(blank=True, help_text="Fighter 1's keys to victory")
+    
+    fighter2_background = models.TextField(blank=True, help_text="Fighter 2's career background and journey to this fight")
+    fighter2_stakes = models.TextField(blank=True, help_text="What's at stake for Fighter 2")
+    fighter2_keys_to_victory = models.TextField(blank=True, help_text="Fighter 2's keys to victory")
+    
+    # Fight context and rivalry
+    rivalry_history = models.TextField(blank=True, help_text="History and beef between the fighters")
+    title_implications = models.TextField(blank=True, help_text="Championship or ranking implications")
+    historical_significance = models.TextField(blank=True, help_text="Historical context and significance")
+    
+    # Key facts and predictions
+    key_facts = models.JSONField(default=list, blank=True, help_text="Key facts and statistics")
+    expert_predictions = models.JSONField(default=list, blank=True, help_text="Expert predictions and analysis")
+    
+    # Editorial metadata
+    author = models.CharField(max_length=100, blank=True, help_text="Author/Editor of the storyline")
+    publication_date = models.DateTimeField(null=True, blank=True)
+    featured_image_url = models.URLField(blank=True, help_text="Main image for the storyline")
+    
+    # JSON import functionality
+    json_data = models.TextField(blank=True, help_text="Paste JSON data here to import storyline content")
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'fight_storylines'
+        verbose_name = 'Fight Storyline'
+        verbose_name_plural = 'Fight Storylines'
+        indexes = [
+            models.Index(fields=['fight'], name='idx_storylines_fight'),
+            models.Index(fields=['publication_date'], name='idx_storylines_pub_date'),
+        ]
+    
+    def __str__(self):
+        return f"Storyline: {self.headline} - {self.fight}"
+    
+    def get_fighters(self):
+        """Get both fighters in the storyline fight"""
+        return self.fight.get_fighters()
+    
+    def is_main_or_co_main(self):
+        """Check if this is for a main or co-main event (legacy method - now available for all fights)"""
+        return self.fight.fight_order <= 2
+    
+    def get_word_count(self):
+        """Calculate total word count for all text fields"""
+        text_fields = [
+            self.summary, self.fighter1_background, self.fighter1_stakes, 
+            self.fighter1_keys_to_victory, self.fighter2_background,
+            self.fighter2_stakes, self.fighter2_keys_to_victory,
+            self.rivalry_history, self.title_implications, self.historical_significance
+        ]
+        total_words = 0
+        for field in text_fields:
+            if field:
+                total_words += len(field.split())
+        return total_words
+    
+    def save(self, *args, **kwargs):
+        """Override save to process JSON import data"""
+        if self.json_data:
+            try:
+                import json
+                data = json.loads(self.json_data)
+                self._process_json_import(data)
+                # Clear JSON data after processing
+                self.json_data = ""
+            except json.JSONDecodeError as e:
+                # Keep the JSON data for user to fix
+                pass
+        
+        super().save(*args, **kwargs)
+    
+    def _process_json_import(self, data):
+        """Process imported JSON data"""
+        # Basic storyline info
+        if 'headline' in data:
+            self.headline = data['headline']
+        if 'summary' in data:
+            self.summary = data['summary']
+        if 'author' in data:
+            self.author = data['author']
+        if 'featured_image_url' in data:
+            self.featured_image_url = data['featured_image_url']
+        
+        # Fighter 1 data
+        fighter1_data = data.get('fighter1', {})
+        if 'background' in fighter1_data:
+            self.fighter1_background = fighter1_data['background']
+        if 'stakes' in fighter1_data:
+            self.fighter1_stakes = fighter1_data['stakes']
+        if 'keys_to_victory' in fighter1_data:
+            self.fighter1_keys_to_victory = fighter1_data['keys_to_victory']
+        
+        # Fighter 2 data
+        fighter2_data = data.get('fighter2', {})
+        if 'background' in fighter2_data:
+            self.fighter2_background = fighter2_data['background']
+        if 'stakes' in fighter2_data:
+            self.fighter2_stakes = fighter2_data['stakes']
+        if 'keys_to_victory' in fighter2_data:
+            self.fighter2_keys_to_victory = fighter2_data['keys_to_victory']
+        
+        # Fight context
+        if 'rivalry_history' in data:
+            self.rivalry_history = data['rivalry_history']
+        if 'title_implications' in data:
+            self.title_implications = data['title_implications']
+        if 'historical_significance' in data:
+            self.historical_significance = data['historical_significance']
+        
+        # Lists
+        if 'key_facts' in data and isinstance(data['key_facts'], list):
+            self.key_facts = data['key_facts']
+        if 'expert_predictions' in data and isinstance(data['expert_predictions'], list):
+            self.expert_predictions = data['expert_predictions']
+        
+        # Handle publication date
+        if 'publication_date' in data:
+            try:
+                from datetime import datetime
+                self.publication_date = datetime.fromisoformat(data['publication_date'].replace('Z', '+00:00'))
+            except (ValueError, AttributeError):
+                pass

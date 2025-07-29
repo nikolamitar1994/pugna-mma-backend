@@ -3,7 +3,7 @@ from django.utils.html import format_html
 from django.urls import reverse
 from .models import (
     Event, Fight, FightParticipant, FightStatistics, 
-    RoundStatistics, Scorecard, RoundScore
+    RoundStatistics, Scorecard, RoundScore, FightStoryline
 )
 
 
@@ -269,6 +269,12 @@ class FightAdmin(admin.ModelAdmin):
                 'referee',
             )
         }),
+        ('Fight Storyline (Editorial Content)', {
+            'fields': (
+                'get_storyline_section',
+            ),
+            'classes': ('wide',),
+        }),
         ('Navigate to Detailed Pages', {
             'fields': (
                 'get_navigation_links',
@@ -284,7 +290,7 @@ class FightAdmin(admin.ModelAdmin):
         }),
     )
     
-    readonly_fields = ['get_navigation_links']
+    readonly_fields = ['get_navigation_links', 'get_storyline_section']
     inlines = [FightParticipantInline]
     autocomplete_fields = ['event', 'weight_class', 'winner']
     
@@ -321,6 +327,92 @@ class FightAdmin(admin.ModelAdmin):
         
         return format_html(' | '.join(links))
     get_action_links.short_description = 'Pages'
+    
+    def get_storyline_section(self, obj):
+        """Display storyline section for all fights"""
+        if not obj.pk:
+            return "Save fight first to access storyline features"
+        
+        # Check if storyline exists
+        if hasattr(obj, 'storyline') and obj.storyline:
+            storyline = obj.storyline
+            storyline_url = reverse('admin:events_fightstoryline_change', args=[storyline.pk])
+            
+            # Count content fields
+            content_fields = [
+                storyline.summary, storyline.fighter1_background, storyline.fighter1_stakes, 
+                storyline.fighter1_keys_to_victory, storyline.fighter2_background,
+                storyline.fighter2_stakes, storyline.fighter2_keys_to_victory,
+                storyline.rivalry_history, storyline.title_implications, storyline.historical_significance
+            ]
+            filled_fields = sum(1 for field in content_fields if field and field.strip())
+            total_fields = len(content_fields)
+            completion_pct = round((filled_fields / total_fields) * 100)
+            
+            word_count = storyline.get_word_count()
+            
+            return format_html(
+                '<div style="padding: 20px; border: 2px solid #4caf50; border-radius: 8px; background: #e8f5e8;">'
+                '<h3 style="margin: 0 0 15px 0; color: #2e7d32;">📖 Fight Storyline Available</h3>'
+                '<div style="background: white; padding: 15px; border-radius: 5px; margin-bottom: 15px;">'
+                '<h4 style="margin: 0 0 10px 0; color: #333;">{}</h4>'
+                '<p style="margin: 0 0 10px 0; color: #555;">{}</p>'
+                '<div style="margin-bottom: 10px;">'
+                '<span style="background: #2e7d32; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-right: 10px;">{}% Complete</span>'
+                '<span style="color: #666; font-size: 12px;">{} words • {} of {} sections filled</span>'
+                '</div>'
+                '<p style="margin: 0; color: #666; font-size: 12px;"><strong>Author:</strong> {}</p>'
+                '</div>'
+                '<a href="{}" target="_blank" style="background: #2e7d32; color: white; padding: 12px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">📝 Edit Storyline</a>'
+                '</div>',
+                storyline.headline or "Untitled Storyline",
+                storyline.summary[:200] + "..." if storyline.summary and len(storyline.summary) > 200 else (storyline.summary or "No summary available"),
+                completion_pct,
+                word_count,
+                filled_fields,
+                total_fields,
+                storyline.author or "Unknown",
+                storyline_url
+            )
+        else:
+            # No storyline exists, show creation link
+            create_url = reverse('admin:events_fightstoryline_add') + f'?fight={obj.pk}'
+            
+            # Determine fight type for display
+            if obj.is_main_event:
+                fight_type = "main event"
+                fight_description = "This main event fight"
+            elif obj.fight_order == 2:
+                fight_type = "co-main event" 
+                fight_description = "This co-main event fight"
+            else:
+                fight_type = f"fight (order #{obj.fight_order})"
+                fight_description = "This fight"
+            
+            return format_html(
+                '<div style="padding: 20px; border: 2px solid #ff9800; border-radius: 8px; background: #fff3e0;">'
+                '<h3 style="margin: 0 0 15px 0; color: #f57c00;">📖 Create Fight Storyline</h3>'
+                '<p style="margin: 0 0 15px 0; color: #f57c00;">{} can have a detailed storyline featuring:</p>'
+                '<ul style="margin: 0 0 15px 0; color: #f57c00;">'
+                '<li>Fighter backgrounds and career journeys</li>'
+                '<li>What\'s at stake for each fighter</li>'
+                '<li>Rivalry history and beef between fighters</li>'
+                '<li>Keys to victory for both sides</li>'
+                '<li>Historical significance and title implications</li>'
+                '<li>Expert predictions and key facts</li>'
+                '</ul>'
+                '<div style="margin-bottom: 15px; padding: 10px; background: rgba(255,255,255,0.7); border-radius: 5px;">'
+                '<small style="color: #e65100;"><strong>Fight Type:</strong> {} | <strong>Event:</strong> {} | <strong>Date:</strong> {}</small>'
+                '</div>'
+                '<a href="{}" target="_blank" style="background: #f57c00; color: white; padding: 12px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">✨ Create Storyline</a>'
+                '</div>',
+                fight_description,
+                fight_type,
+                obj.event.name,
+                obj.event.date,
+                create_url
+            )
+    get_storyline_section.short_description = 'Editorial Storyline'
     
     def get_navigation_links(self, obj):
         """Navigation links within the fight detail page"""
@@ -1115,5 +1207,263 @@ class ScorecardAdmin(admin.ModelAdmin):
 
 # RoundStatistics and RoundScore are now managed exclusively through their parent admin inlines
 # This eliminates the need for separate admin pages and keeps related data together
+
+
+@admin.register(FightStoryline)
+class FightStorylineAdmin(admin.ModelAdmin):
+    """Admin interface for fight storylines - Editorial content for all fights"""
+    
+    list_display = [
+        'get_fight_display', 'headline', 'author', 'get_completion_status', 
+        'get_word_count_display', 'publication_date'
+    ]
+    
+    list_filter = [
+        'publication_date',
+        'author',
+        'fight__event__organization',
+        'fight__event__date',
+    ]
+    
+    search_fields = [
+        'headline', 'summary', 'author',
+        'fight__participants__fighter__first_name',
+        'fight__participants__fighter__last_name',
+        'fight__event__name'
+    ]
+    
+    fieldsets = (
+        ('Fight Information', {
+            'fields': (
+                'fight',
+                'get_fight_context',
+            )
+        }),
+        ('Storyline Header', {
+            'fields': (
+                'headline',
+                'summary',
+                ('author', 'publication_date'),
+                'featured_image_url',
+            )
+        }),
+        ('JSON Import', {
+            'fields': (
+                'json_data',
+                'get_json_import_section',
+            ),
+            'classes': ('collapse',),
+        }),
+        ('Fighter 1 Profile', {
+            'fields': (
+                'get_fighter1_header',
+                'fighter1_background',
+                'fighter1_stakes',
+                'fighter1_keys_to_victory',
+            ),
+            'classes': ('wide',),
+        }),
+        ('Fighter 2 Profile', {
+            'fields': (
+                'get_fighter2_header',
+                'fighter2_background',
+                'fighter2_stakes',
+                'fighter2_keys_to_victory',
+            ),
+            'classes': ('wide',),
+        }),
+        ('Fight Context & Analysis', {
+            'fields': (
+                'rivalry_history',
+                'title_implications',
+                'historical_significance',
+            ),
+            'classes': ('wide',),
+        }),
+        ('Facts & Predictions', {
+            'fields': (
+                'key_facts',
+                'expert_predictions',
+            ),
+            'classes': ('collapse',),
+        }),
+    )
+    
+    readonly_fields = [
+        'get_fight_context', 'get_fighter1_header', 'get_fighter2_header', 
+        'get_json_import_section'
+    ]
+    autocomplete_fields = ['fight']
+    
+    def get_fight_display(self, obj):
+        """Display fight information"""
+        return str(obj.fight)
+    get_fight_display.short_description = 'Fight'
+    
+    def get_completion_status(self, obj):
+        """Display completion percentage"""
+        content_fields = [
+            obj.summary, obj.fighter1_background, obj.fighter1_stakes, 
+            obj.fighter1_keys_to_victory, obj.fighter2_background,
+            obj.fighter2_stakes, obj.fighter2_keys_to_victory,
+            obj.rivalry_history, obj.title_implications, obj.historical_significance
+        ]
+        filled_fields = sum(1 for field in content_fields if field and field.strip())
+        total_fields = len(content_fields)
+        completion_pct = round((filled_fields / total_fields) * 100)
+        
+        if completion_pct >= 80:
+            color = 'green'
+        elif completion_pct >= 50:
+            color = 'orange'
+        else:
+            color = 'red'
+        
+        return format_html(
+            '<span style="color: {}; font-weight: bold;">{}% Complete</span>',
+            color, completion_pct
+        )
+    get_completion_status.short_description = 'Completion'
+    
+    def get_word_count_display(self, obj):
+        """Display word count"""
+        word_count = obj.get_word_count()
+        return f"{word_count} words"
+    get_word_count_display.short_description = 'Word Count'
+    
+    def get_fight_context(self, obj):
+        """Display fight context"""
+        if not obj.fight:
+            return "Select a fight first"
+        
+        fighters = obj.fight.get_fighters()
+        if len(fighters) < 2:
+            return "Fight must have two participants"
+        
+        fighter1, fighter2 = fighters[0], fighters[1]
+        
+        return format_html(
+            '<div style="padding: 15px; background: #f0f8ff; border-radius: 5px; border: 1px solid #0066cc;">'
+            '<h3 style="margin: 0 0 10px 0; color: #0066cc;">📖 Storyline Context</h3>'
+            '<div style="display: grid; grid-template-columns: 1fr auto 1fr; gap: 15px; align-items: center;">'
+            '<div style="text-align: center;">'
+            '<h4 style="margin: 0 0 5px 0; color: #333;">{}</h4>'
+            '<p style="margin: 0; color: #666; font-size: 12px;">{}</p>'
+            '</div>'
+            '<div style="text-align: center; font-size: 20px; font-weight: bold; color: #0066cc;">VS</div>'
+            '<div style="text-align: center;">'
+            '<h4 style="margin: 0 0 5px 0; color: #333;">{}</h4>'
+            '<p style="margin: 0; color: #666; font-size: 12px;">{}</p>'
+            '</div>'
+            '</div>'
+            '<div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #ddd; text-align: center; color: #666;">'
+            '<strong>{}</strong><br>'
+            '{} • {} • Fight Order: {}'
+            '</div>'
+            '</div>',
+            fighter1.get_full_name(),
+            fighter1.nationality or "Unknown nationality",
+            fighter2.get_full_name(),
+            fighter2.nationality or "Unknown nationality",
+            obj.fight.event.name,
+            obj.fight.event.date,
+            obj.fight.weight_class.name if obj.fight.weight_class else "No weight class",
+            obj.fight.fight_order
+        )
+    get_fight_context.short_description = 'Fight Context'
+    
+    def get_fighter1_header(self, obj):
+        """Display Fighter 1 header"""
+        if not obj.fight:
+            return "Select a fight first"
+        
+        fighters = obj.fight.get_fighters()
+        if len(fighters) < 1:
+            return "Fight needs participants"
+        
+        fighter = fighters[0]
+        return format_html(
+            '<div style="padding: 10px; background: #e8f5e8; border-radius: 5px; border-left: 4px solid #4caf50;">'
+            '<h4 style="margin: 0; color: #2e7d32;">🥊 {} Profile</h4>'
+            '</div>',
+            fighter.get_full_name()
+        )
+    get_fighter1_header.short_description = 'Fighter 1'
+    
+    def get_fighter2_header(self, obj):
+        """Display Fighter 2 header"""
+        if not obj.fight:
+            return "Select a fight first"
+        
+        fighters = obj.fight.get_fighters()
+        if len(fighters) < 2:
+            return "Fight needs both participants"
+        
+        fighter = fighters[1]
+        return format_html(
+            '<div style="padding: 10px; background: #e3f2fd; border-radius: 5px; border-left: 4px solid #2196f3;">'
+            '<h4 style="margin: 0; color: #1976d2;">🥊 {} Profile</h4>'
+            '</div>',
+            fighter.get_full_name()
+        )
+    get_fighter2_header.short_description = 'Fighter 2'
+    
+    def get_json_import_section(self, obj):
+        """JSON import functionality for storylines"""
+        return format_html(
+            '<div style="padding: 20px; background: #ffffff; border: 2px solid #0066cc; border-radius: 8px; margin: 10px 0;">'
+            '<h3 style="margin: 0 0 15px 0; color: #0066cc; border-bottom: 2px solid #0066cc; padding-bottom: 10px;">📖 Storyline JSON Import</h3>'
+            '<div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 15px;">'
+            '<h4 style="margin: 0 0 10px 0; color: #333;">Import complete storyline content with this JSON structure:</h4>'
+            '</div>'
+            '<pre style="background: #2d3748; color: #e2e8f0; padding: 15px; border-radius: 5px; font-size: 12px; line-height: 1.4; overflow-x: auto; margin: 0 0 15px 0;">'
+            '{{\n'
+            '  "headline": "Jones vs Miocic: Legacy Defining Heavyweight Showdown",\n'
+            '  "summary": "Two legends collide in a fight that will define heavyweight history...",\n'
+            '  "author": "MMA Editorial Team",\n'
+            '  "featured_image_url": "https://example.com/fight-poster.jpg",\n'
+            '  "fighter1": {{\n'
+            '    "background": "Jon Jones, widely considered the greatest light heavyweight...",\n'
+            '    "stakes": "A chance to cement his legacy as the greatest of all time...",\n'
+            '    "keys_to_victory": "Utilize his reach advantage and elite wrestling..."\n'
+            '  }},\n'
+            '  "fighter2": {{\n'
+            '    "background": "Stipe Miocic, the most successful heavyweight champion...",\n'
+            '    "stakes": "Prove he is still the king of the heavyweight division...",\n'
+            '    "keys_to_victory": "Pressure Jones early and use his boxing skills..."\n'
+            '  }},\n'
+            '  "rivalry_history": "While they never fought before, both have been...",\n'
+            '  "title_implications": "The winner will be undisputed heavyweight champion...",\n'
+            '  "historical_significance": "This fight represents a passing of the torch...",\n'
+            '  "key_facts": [\n'
+            '    "Jones has never lost a legitimate fight in his career",\n'
+            '    "Miocic holds the record for most heavyweight title defenses",\n'
+            '    "Both fighters are in their late 30s"\n'
+            '  ],\n'
+            '  "expert_predictions": [\n'
+            '    "Daniel Cormier predicts Jones by decision",\n'
+            '    "Joe Rogan thinks Miocic by knockout",\n'
+            '    "Most experts favor Jones 60-40"\n'
+            '  ],\n'
+            '  "publication_date": "2024-11-15T10:00:00Z"\n'
+            '}}'
+            '</pre>'
+            '<div style="background: #e8f5e8; border: 1px solid #4caf50; padding: 12px; border-radius: 5px; margin-bottom: 10px;">'
+            '<h4 style="margin: 0 0 8px 0; color: #2e7d32;">✅ After Import</h4>'
+            '<p style="margin: 0; color: #2e7d32;">Click "Save and continue editing" to process the JSON data and populate all storyline fields.</p>'
+            '</div>'
+            '<div style="background: #fff3cd; border: 1px solid #ffc107; padding: 12px; border-radius: 5px;">'
+            '<h4 style="margin: 0 0 8px 0; color: #856404;">💡 Pro Tip</h4>'
+            '<p style="margin: 0; color: #856404;">JSON import will overwrite existing content. Use this for bulk importing complete storylines from external sources.</p>'
+            '</div>'
+            '</div>'
+        )
+    get_json_import_section.short_description = 'JSON Import'
+    
+    def get_queryset(self, request):
+        """Optimize queries"""
+        return super().get_queryset(request).select_related(
+            'fight__event', 'fight__weight_class'
+        ).prefetch_related('fight__participants__fighter')
 
 
