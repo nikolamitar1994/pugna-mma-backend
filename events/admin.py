@@ -16,8 +16,10 @@ class FightParticipantInline(admin.TabularInline):
     autocomplete_fields = ['fighter']
 
 
+
+
 class FightInline(admin.StackedInline):
-    """Inline editing for fights within events"""
+    """Detailed inline editing for individual fights"""
     model = Fight
     extra = 1
     fields = (
@@ -28,6 +30,7 @@ class FightInline(admin.StackedInline):
         'referee',
     )
     autocomplete_fields = ['weight_class', 'winner']
+    classes = ['collapse']  # Collapsed by default since we have the overview
 
 
 @admin.register(Event)
@@ -63,6 +66,12 @@ class EventAdmin(admin.ModelAdmin):
                 ('state', 'country'),
             )
         }),
+        ('Fight Card Overview', {
+            'fields': (
+                'get_fight_card_overview',
+            ),
+            'classes': ('wide',),
+        }),
         ('Event Metrics', {
             'fields': (
                 ('attendance', 'gate_revenue'),
@@ -80,8 +89,139 @@ class EventAdmin(admin.ModelAdmin):
         }),
     )
     
+    readonly_fields = ['get_fight_card_overview']
     inlines = [FightInline]
     date_hierarchy = 'date'
+    
+    def get_fight_card_overview(self, obj=None):
+        """Display Wikipedia-style fight card table"""
+        if not obj or not obj.pk:
+            return "Save event first to view fight card overview"
+        
+        # Get all fights for this event ordered by fight_order
+        fights = obj.fights.all().order_by('fight_order')
+        
+        if not fights:
+            return "No fights scheduled for this event"
+        
+        # Organize fights by card position
+        main_card = []
+        prelims = []
+        early_prelims = []
+        
+        for fight in fights:
+            if fight.is_main_event or fight.fight_order <= 5:
+                main_card.append(fight)
+            elif fight.fight_order <= 9:
+                prelims.append(fight)
+            else:
+                early_prelims.append(fight)
+        
+        def generate_fight_table(fights_list, card_name):
+            """Generate Wikipedia-style table for fight card section"""
+            if not fights_list:
+                return ""
+            
+            html = f'''
+            <h4 style="margin: 20px 0 10px 0; color: #333; border-bottom: 2px solid #333; padding-bottom: 5px;">
+                {card_name}
+            </h4>
+            <table style="width: 100%; border-collapse: collapse; font-size: 14px; margin-bottom: 20px;">
+                <thead>
+                    <tr style="background: #f0f0f0;">
+                        <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Weight class</th>
+                        <th style="border: 1px solid #ddd; padding: 8px; text-align: left;" colspan="3">Result</th>
+                        <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Method</th>
+                        <th style="border: 1px solid #ddd; padding: 8px; text-align: center;">Round</th>
+                        <th style="border: 1px solid #ddd; padding: 8px; text-align: center;">Time</th>
+                        <th style="border: 1px solid #ddd; padding: 8px; text-align: center;">Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+            '''
+            
+            for fight in fights_list:
+                participants = fight.participants.all()
+                
+                # Weight class
+                weight_class = fight.weight_class.name if fight.weight_class else 'TBA'
+                
+                # Fighter names and result with clickable links
+                if len(participants) >= 2:
+                    fighter1 = participants[0].fighter
+                    fighter2 = participants[1].fighter
+                    
+                    # Create clickable links to fighter admin pages
+                    fighter1_url = reverse('admin:fighters_fighter_change', args=[fighter1.pk])
+                    fighter2_url = reverse('admin:fighters_fighter_change', args=[fighter2.pk])
+                    
+                    fighter1_link = f'<a href="{fighter1_url}" style="text-decoration: none; color: inherit;">{fighter1.get_full_name()}</a>'
+                    fighter2_link = f'<a href="{fighter2_url}" style="text-decoration: none; color: inherit;">{fighter2.get_full_name()}</a>'
+                    
+                    if fight.winner:
+                        if fight.winner == fighter1:
+                            winner_cell = f'<strong style="color: green;">{fighter1_link}</strong>'
+                            loser_cell = fighter2_link
+                            def_cell = 'def.'
+                        else:
+                            winner_cell = f'<strong style="color: green;">{fighter2_link}</strong>'
+                            loser_cell = fighter1_link
+                            def_cell = 'def.'
+                    else:
+                        winner_cell = fighter1_link
+                        def_cell = 'vs'
+                        loser_cell = fighter2_link
+                else:
+                    winner_cell = 'TBA'
+                    def_cell = 'vs'
+                    loser_cell = 'TBA'
+                
+                # Method
+                method = fight.method or '—'
+                if fight.method_details:
+                    method += f' ({fight.method_details})'
+                
+                # Round and Time
+                round_num = fight.ending_round or '—'
+                time = fight.ending_time or '—'
+                
+                # View fight button
+                fight_url = reverse('admin:events_fight_change', args=[fight.pk])
+                view_button = f'<a href="{fight_url}" style="background: #0066cc; color: white; padding: 4px 8px; border-radius: 3px; text-decoration: none; font-size: 12px;">View Fight</a>'
+                
+                html += f'''
+                <tr>
+                    <td style="border: 1px solid #ddd; padding: 8px;">{weight_class}</td>
+                    <td style="border: 1px solid #ddd; padding: 8px;">{winner_cell}</td>
+                    <td style="border: 1px solid #ddd; padding: 8px; text-align: center; font-weight: bold;">{def_cell}</td>
+                    <td style="border: 1px solid #ddd; padding: 8px;">{loser_cell}</td>
+                    <td style="border: 1px solid #ddd; padding: 8px;">{method}</td>
+                    <td style="border: 1px solid #ddd; padding: 8px; text-align: center;">{round_num}</td>
+                    <td style="border: 1px solid #ddd; padding: 8px; text-align: center;">{time}</td>
+                    <td style="border: 1px solid #ddd; padding: 8px; text-align: center;">{view_button}</td>
+                </tr>
+                '''
+            
+            html += '</tbody></table>'
+            return html
+        
+        # Build complete HTML with all sections
+        html = '<div style="margin: 10px 0;">'
+        
+        if main_card:
+            html += generate_fight_table(main_card, "Main Card")
+        
+        if prelims:
+            html += generate_fight_table(prelims, "Preliminary Card")
+        
+        if early_prelims:
+            html += generate_fight_table(early_prelims, "Early Preliminary Card")
+        
+        html += '</div>'
+        
+        return format_html(html)
+    
+    get_fight_card_overview.short_description = 'Fight Card Results'
     
     def get_fight_count(self, obj):
         """Display number of fights on card"""
@@ -328,6 +468,13 @@ class FightStatisticsAdmin(admin.ModelAdmin):
                 ('fight', 'fighter1', 'fighter2'),
             )
         }),
+        ('JSON Import', {
+            'fields': (
+                'json_data',
+                'get_json_import_section',
+            ),
+            'classes': ('collapse',),
+        }),
         ('Round-by-Round Statistics Table (UFCstats.com style)', {
             'fields': (
                 'get_round_statistics_table',
@@ -351,7 +498,7 @@ class FightStatisticsAdmin(admin.ModelAdmin):
         }),
     )
     
-    readonly_fields = ['get_fight_header', 'get_round_statistics_table']
+    readonly_fields = ['get_fight_header', 'get_round_statistics_table', 'get_json_import_section']
     inlines = [RoundStatisticsInline]
     autocomplete_fields = ['fight', 'fighter1', 'fighter2']
     
@@ -478,6 +625,183 @@ class FightStatisticsAdmin(admin.ModelAdmin):
         count = obj.round_stats.count()
         return f"{count} rounds"
     get_round_stats_count.short_description = 'Round Stats'
+    
+    def get_json_import_section(self, obj):
+        """JSON import functionality for fight statistics"""
+        return format_html(
+            '<div style="padding: 20px; background: #ffffff; border: 2px solid #0066cc; border-radius: 8px; margin: 10px 0;">'
+            '<h3 style="margin: 0 0 15px 0; color: #0066cc; border-bottom: 2px solid #0066cc; padding-bottom: 10px;">📊 JSON Import Instructions</h3>'
+            '<div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 15px;">'
+            '<h4 style="margin: 0 0 10px 0; color: #333;">Step 1: Paste fight statistics JSON in the field above</h4>'
+            '<p style="margin: 0 0 10px 0; color: #555;">Use this format for complete fight statistics with round-by-round breakdown:</p>'
+            '</div>'
+            '<pre style="background: #2d3748; color: #e2e8f0; padding: 15px; border-radius: 5px; font-size: 12px; line-height: 1.4; overflow-x: auto; margin: 0 0 15px 0;">'
+            '{{\n'
+            '  "fight_totals": {{\n'
+            '    "fighter1_strikes_landed": 85,\n'
+            '    "fighter1_strikes_attempted": 120,\n'
+            '    "fighter2_strikes_landed": 92,\n'
+            '    "fighter2_strikes_attempted": 115,\n'
+            '    "fighter1_takedowns": 2,\n'
+            '    "fighter1_takedown_attempts": 4,\n'
+            '    "fighter2_takedowns": 0,\n'
+            '    "fighter2_takedown_attempts": 1,\n'
+            '    "fighter1_control_time": 180,\n'
+            '    "fighter2_control_time": 45\n'
+            '  }},\n'
+            '  "rounds": [\n'
+            '    {{\n'
+            '      "round_number": 1,\n'
+            '      "fighter1_total_strikes_landed": 28,\n'
+            '      "fighter1_total_strikes_attempted": 40,\n'
+            '      "fighter1_head_strikes_landed": 15,\n'
+            '      "fighter1_head_strikes_attempted": 22,\n'
+            '      "fighter1_body_strikes_landed": 8,\n'
+            '      "fighter1_body_strikes_attempted": 12,\n'
+            '      "fighter1_leg_strikes_landed": 5,\n'
+            '      "fighter1_leg_strikes_attempted": 6,\n'
+            '      "fighter1_takedowns_landed": 1,\n'
+            '      "fighter1_takedown_attempts": 2,\n'
+            '      "fighter1_control_time": 90,\n'
+            '      "fighter2_total_strikes_landed": 32,\n'
+            '      "fighter2_total_strikes_attempted": 38,\n'
+            '      "fighter2_head_strikes_landed": 18,\n'
+            '      "fighter2_head_strikes_attempted": 25,\n'
+            '      "fighter2_body_strikes_landed": 10,\n'
+            '      "fighter2_body_strikes_attempted": 10,\n'
+            '      "fighter2_leg_strikes_landed": 4,\n'
+            '      "fighter2_leg_strikes_attempted": 3,\n'
+            '      "fighter2_takedowns_landed": 0,\n'
+            '      "fighter2_takedown_attempts": 0,\n'
+            '      "fighter2_control_time": 15\n'
+            '    }},\n'
+            '    {{\n'
+            '      "round_number": 2,\n'
+            '      // ... similar structure for each round\n'
+            '    }}\n'
+            '  ]\n'
+            '}}'
+            '</pre>'
+            '<div style="background: #e8f5e8; border: 1px solid #4caf50; padding: 12px; border-radius: 5px; margin-bottom: 10px;">'
+            '<h4 style="margin: 0 0 8px 0; color: #2e7d32;">✅ Step 2: Save the statistics</h4>'
+            '<p style="margin: 0; color: #2e7d32;">After pasting JSON data, click "Save and continue editing" to process the import.</p>'
+            '</div>'
+            '<div style="background: #fff3cd; border: 1px solid #ffc107; padding: 12px; border-radius: 5px; margin-bottom: 10px;">'
+            '<h4 style="margin: 0 0 8px 0; color: #856404;">⚠️ Note</h4>'
+            '<p style="margin: 0; color: #856404;">JSON import will overwrite existing statistics and round data. Backup important data before importing.</p>'
+            '</div>'
+            '<div style="background: #f0f8ff; border: 1px solid #0066cc; padding: 12px; border-radius: 5px;">'
+            '<h4 style="margin: 0 0 8px 0; color: #0066cc;">💡 UFCstats.com Style</h4>'
+            '<p style="margin: 0; color: #0066cc;">This will automatically create the complete round-by-round breakdown table like UFCstats.com with all striking positions, grappling stats, and control time.</p>'
+            '</div>'
+            '</div>'
+        )
+    get_json_import_section.short_description = 'Import Instructions'
+    
+    def save_model(self, request, obj, form, change):
+        """Auto-process JSON import when saving"""
+        # Process JSON import if provided
+        if obj.json_data and obj.json_data.strip():
+            self._process_stats_json_import(obj, request)
+        
+        super().save_model(request, obj, form, change)
+    
+    def _process_stats_json_import(self, obj, request):
+        """Process JSON import data and create fight statistics with round breakdown"""
+        import json
+        from .models import RoundStatistics
+        
+        try:
+            data = json.loads(obj.json_data)
+            
+            # Set fight totals if provided
+            if 'fight_totals' in data:
+                totals = data['fight_totals']
+                obj.fighter1_strikes_landed = totals.get('fighter1_strikes_landed', 0)
+                obj.fighter1_strikes_attempted = totals.get('fighter1_strikes_attempted', 0)
+                obj.fighter2_strikes_landed = totals.get('fighter2_strikes_landed', 0)
+                obj.fighter2_strikes_attempted = totals.get('fighter2_strikes_attempted', 0)
+                obj.fighter1_takedowns = totals.get('fighter1_takedowns', 0)
+                obj.fighter1_takedown_attempts = totals.get('fighter1_takedown_attempts', 0)
+                obj.fighter2_takedowns = totals.get('fighter2_takedowns', 0)
+                obj.fighter2_takedown_attempts = totals.get('fighter2_takedown_attempts', 0)
+                obj.fighter1_control_time = totals.get('fighter1_control_time', 0)
+                obj.fighter2_control_time = totals.get('fighter2_control_time', 0)
+            
+            # Clear existing round statistics
+            obj.round_stats.all().delete()
+            
+            # Create new round statistics
+            if 'rounds' in data:
+                for round_data in data['rounds']:
+                    RoundStatistics.objects.create(
+                        fight_statistics=obj,
+                        round_number=round_data['round_number'],
+                        # Fighter 1 striking
+                        fighter1_total_strikes_landed=round_data.get('fighter1_total_strikes_landed', 0),
+                        fighter1_total_strikes_attempted=round_data.get('fighter1_total_strikes_attempted', 0),
+                        fighter1_head_strikes_landed=round_data.get('fighter1_head_strikes_landed', 0),
+                        fighter1_head_strikes_attempted=round_data.get('fighter1_head_strikes_attempted', 0),
+                        fighter1_body_strikes_landed=round_data.get('fighter1_body_strikes_landed', 0),
+                        fighter1_body_strikes_attempted=round_data.get('fighter1_body_strikes_attempted', 0),
+                        fighter1_leg_strikes_landed=round_data.get('fighter1_leg_strikes_landed', 0),
+                        fighter1_leg_strikes_attempted=round_data.get('fighter1_leg_strikes_attempted', 0),
+                        fighter1_distance_strikes_landed=round_data.get('fighter1_distance_strikes_landed', 0),
+                        fighter1_distance_strikes_attempted=round_data.get('fighter1_distance_strikes_attempted', 0),
+                        fighter1_clinch_strikes_landed=round_data.get('fighter1_clinch_strikes_landed', 0),
+                        fighter1_clinch_strikes_attempted=round_data.get('fighter1_clinch_strikes_attempted', 0),
+                        fighter1_ground_strikes_landed=round_data.get('fighter1_ground_strikes_landed', 0),
+                        fighter1_ground_strikes_attempted=round_data.get('fighter1_ground_strikes_attempted', 0),
+                        # Fighter 1 grappling
+                        fighter1_takedowns_landed=round_data.get('fighter1_takedowns_landed', 0),
+                        fighter1_takedown_attempts=round_data.get('fighter1_takedown_attempts', 0),
+                        fighter1_submission_attempts=round_data.get('fighter1_submission_attempts', 0),
+                        fighter1_reversals=round_data.get('fighter1_reversals', 0),
+                        fighter1_control_time=round_data.get('fighter1_control_time', 0),
+                        fighter1_knockdowns=round_data.get('fighter1_knockdowns', 0),
+                        # Fighter 2 striking
+                        fighter2_total_strikes_landed=round_data.get('fighter2_total_strikes_landed', 0),
+                        fighter2_total_strikes_attempted=round_data.get('fighter2_total_strikes_attempted', 0),
+                        fighter2_head_strikes_landed=round_data.get('fighter2_head_strikes_landed', 0),
+                        fighter2_head_strikes_attempted=round_data.get('fighter2_head_strikes_attempted', 0),
+                        fighter2_body_strikes_landed=round_data.get('fighter2_body_strikes_landed', 0),
+                        fighter2_body_strikes_attempted=round_data.get('fighter2_body_strikes_attempted', 0),
+                        fighter2_leg_strikes_landed=round_data.get('fighter2_leg_strikes_landed', 0),
+                        fighter2_leg_strikes_attempted=round_data.get('fighter2_leg_strikes_attempted', 0),
+                        fighter2_distance_strikes_landed=round_data.get('fighter2_distance_strikes_landed', 0),
+                        fighter2_distance_strikes_attempted=round_data.get('fighter2_distance_strikes_attempted', 0),
+                        fighter2_clinch_strikes_landed=round_data.get('fighter2_clinch_strikes_landed', 0),
+                        fighter2_clinch_strikes_attempted=round_data.get('fighter2_clinch_strikes_attempted', 0),
+                        fighter2_ground_strikes_landed=round_data.get('fighter2_ground_strikes_landed', 0),
+                        fighter2_ground_strikes_attempted=round_data.get('fighter2_ground_strikes_attempted', 0),
+                        # Fighter 2 grappling
+                        fighter2_takedowns_landed=round_data.get('fighter2_takedowns_landed', 0),
+                        fighter2_takedown_attempts=round_data.get('fighter2_takedown_attempts', 0),
+                        fighter2_submission_attempts=round_data.get('fighter2_submission_attempts', 0),
+                        fighter2_reversals=round_data.get('fighter2_reversals', 0),
+                        fighter2_control_time=round_data.get('fighter2_control_time', 0),
+                        fighter2_knockdowns=round_data.get('fighter2_knockdowns', 0),
+                        # Round metadata
+                        round_duration=round_data.get('round_duration', 300),
+                        round_notes=round_data.get('round_notes', '')
+                    )
+                
+                # Clear JSON data after successful import
+                obj.json_data = ''
+                
+                # Add success message
+                from django.contrib import messages
+                messages.success(request, f'Successfully imported fight totals and {len(data["rounds"])} rounds of detailed statistics')
+            
+        except json.JSONDecodeError as e:
+            from django.contrib import messages
+            messages.error(request, f'Invalid JSON format: {str(e)}')
+        except KeyError as e:
+            from django.contrib import messages
+            messages.error(request, f'Missing required field: {str(e)}')
+        except Exception as e:
+            from django.contrib import messages
+            messages.error(request, f'Error importing JSON: {str(e)}')
 
 
 class RoundScoreInline(admin.StackedInline):
@@ -531,11 +855,10 @@ class RoundScoreInline(admin.StackedInline):
 
 @admin.register(Scorecard)
 class ScorecardAdmin(admin.ModelAdmin):
-    """CONSOLIDATED Judge Scorecards - ALL judges & round scores in one place (MMADecisions.com style)"""
+    """Individual Judge Scorecard with Round-by-Round Scoring"""
     
     list_display = [
-        'get_fight_display', 'get_all_judges_display', 'get_decision_summary',
-        'get_all_judges_count'
+        'get_fight_display', 'judge_name', 'get_total_score', 'get_decision'
     ]
     
     list_filter = [
@@ -549,322 +872,245 @@ class ScorecardAdmin(admin.ModelAdmin):
         'judge_name'
     ]
     
-    def get_queryset(self, request):
-        """Show only one scorecard per fight (the first one) to avoid duplicates"""
-        qs = super().get_queryset(request)
-        # Get distinct fights by getting the first scorecard for each fight
-        fight_ids = qs.values('fight').distinct()
-        first_scorecard_ids = []
-        
-        for fight_data in fight_ids:
-            fight_id = fight_data['fight']
-            first_scorecard = qs.filter(fight_id=fight_id).first()
-            if first_scorecard:
-                first_scorecard_ids.append(first_scorecard.id)
-        
-        return qs.filter(id__in=first_scorecard_ids).select_related('fight')
-    
-    def get_all_judges_display(self, obj):
-        """Display all judges for this fight"""
-        all_scorecards = obj.fight.scorecards.all()
-        judge_names = [sc.judge_name for sc in all_scorecards]
-        return ', '.join(judge_names)
-    get_all_judges_display.short_description = 'All Judges'
-    
-    def get_decision_summary(self, obj):
-        """Display overall decision summary"""
-        all_scorecards = obj.fight.scorecards.all()
-        if not all_scorecards:
-            return '-'
-            
-        # Count wins for each fighter
-        f1_wins = sum(1 for sc in all_scorecards if sc.fighter1_score > sc.fighter2_score)
-        f2_wins = sum(1 for sc in all_scorecards if sc.fighter2_score > sc.fighter1_score)
-        
-        if f1_wins > f2_wins:
-            return format_html('<span style="color: green; font-weight: bold;">Fighter 1 Wins ({}-{})</span>', f1_wins, f2_wins)
-        elif f2_wins > f1_wins:
-            return format_html('<span style="color: blue; font-weight: bold;">Fighter 2 Wins ({}-{})</span>', f2_wins, f1_wins)
-        else:
-            return format_html('<span style="color: orange; font-weight: bold;">Split Decision ({}-{})</span>', f1_wins, f2_wins)
-    get_decision_summary.short_description = 'Overall Decision'
-    
-    def get_all_judges_count(self, obj):
-        """Display total number of judges"""
-        count = obj.fight.scorecards.count()
-        return f"{count} judges"
-    get_all_judges_count.short_description = 'Judge Count'
-    
     fieldsets = (
         ('Fight Information', {
             'fields': (
-                'get_fight_header',
                 'fight',
+                'get_fighter_names',
             )
         }),
-        ('ALL Judges\' Scorecards - Consolidated View (MMADecisions.com style)', {
+        ('Judge Details', {
             'fields': (
-                'get_judge_scorecard_table',
-            ),
-            'classes': ('wide',),
+                'judge_name',
+                'get_scorecard_preview',
+            )
         }),
-        ('Manage Individual Judge Scores', {
+        ('JSON Import', {
             'fields': (
-                'get_judge_management_info',
+                'json_data',
+                'get_json_import_section',
             ),
             'classes': ('collapse',),
         }),
     )
     
-    readonly_fields = ['get_fight_header', 'get_judge_scorecard_table', 'get_judge_management_info']
+    readonly_fields = ['get_fighter_names', 'get_scorecard_preview', 'get_json_import_section']
     autocomplete_fields = ['fight']
+    inlines = [RoundScoreInline]
     
-    def get_judge_management_info(self, obj):
-        """Information about managing individual judge scores"""
-        if not obj.pk:
-            return "Save to manage judge scores"
-            
-        all_scorecards = obj.fight.scorecards.all()
+    def get_fighter_names(self, obj):
+        """Display fighter names for context"""
+        if not obj or not obj.fight:
+            return "Select a fight first"
         
-        info_html = f'''
-        <div style="padding: 15px; background: #f0f8ff; border-radius: 5px; border: 1px solid #0066cc;">
-            <h4 style="margin: 0 0 15px 0; color: #0066cc;">Individual Judge Score Management</h4>
-            <p style="margin: 0 0 10px 0;">This interface shows <strong>ALL judges consolidated</strong>, but you can still manage individual judges:</p>
-            <ul style="margin: 0;">
-        '''
-        
-        for scorecard in all_scorecards:
-            edit_url = f'/admin/events/scorecard/{scorecard.pk}/change/'
-            info_html += f'''
-                <li style="margin: 5px 0;">
-                    <strong>{scorecard.judge_name}:</strong> {scorecard.fighter1_score}-{scorecard.fighter2_score} 
-                    [<a href="{edit_url}">Edit Individual Judge</a>]
-                </li>
-            '''
-        
-        info_html += '''
-            </ul>
-            <p style="margin: 10px 0 0 0; color: #666; font-size: 12px;">
-                <strong>Note:</strong> Use the consolidated table above to view all judges together, 
-                or click individual judge links to edit specific scorecards.
-            </p>
-        </div>
-        '''
-        
-        return format_html(info_html)
-    get_judge_management_info.short_description = 'Individual Judge Management'
-    
-    def get_fight_header(self, obj):
-        """Display fight header like MMADecisions.com"""
-        if not obj.pk:
-            return "Save to view fight header"
-            
-        fight = obj.fight
-        participants = fight.participants.all()
+        participants = obj.fight.participants.all()
         if len(participants) >= 2:
-            fighter1_name = participants[0].fighter.get_full_name()
-            fighter2_name = participants[1].fighter.get_full_name()
-        else:
-            fighter1_name = "Fighter 1"
-            fighter2_name = "Fighter 2"
-            
-        return format_html(
-            '<div style="background: #cc6600; color: white; padding: 20px; border-radius: 5px; margin: 10px 0;">'\
-            '<h2 style="margin: 0 0 10px 0;">⚖️ Official Judge Scorecards - All Judges</h2>'\
-            '<h3 style="margin: 0 0 10px 0;">{} vs {}</h3>'\
-            '<p style="margin: 0; font-size: 16px;">{} • {} • {}</p>'\
-            '<p style="margin: 5px 0 0 0;">Method: {} ({})</p>'\
-            '<p style="margin: 5px 0 0 0; font-size: 14px;">Currently viewing: Judge {}</p>'\
-            '</div>',
-            fighter1_name,
-            fighter2_name,
-            fight.event.name,
-            fight.event.date,
-            fight.get_status_display(),
-            fight.method,
-            fight.method_details,
-            obj.judge_name
-        )
-    get_fight_header.short_description = 'Fight Header'
-    
-    def get_judge_scorecard_table(self, obj):
-        """Display ALL judges' scorecards for this fight in MMADecisions.com table format"""
-        if not obj.pk:
-            return "Save to view scorecards"
-            
-        fight = obj.fight
-        participants = fight.participants.all()
-        all_scorecards = fight.scorecards.all().order_by('judge_name')
-        
-        if len(participants) >= 2:
-            fighter1_name = participants[0].fighter.get_full_name()
-            fighter2_name = participants[1].fighter.get_full_name()
-        else:
-            fighter1_name = "Fighter 1"
-            fighter2_name = "Fighter 2"
-        
-        if not all_scorecards:
+            fighter1 = participants[0].fighter.get_full_name()
+            fighter2 = participants[1].fighter.get_full_name()
             return format_html(
-                '<div style="text-align: center; padding: 40px; background: #f9f9f9; border-radius: 5px;">'\
-                '<h3>No Official Scorecards Available</h3>'\
-                '<p>Add judge scorecards for this fight</p>'\
+                '<div style="padding: 10px; background: #f0f8ff; border-radius: 5px;">'
+                '<strong>📊 Scoring:</strong> {fighter1} vs {fighter2}<br>'
+                '<small>{event} • {date}</small>'
+                '</div>',
+                fighter1=fighter1,
+                fighter2=fighter2,
+                event=obj.fight.event.name,
+                date=obj.fight.event.date
+            )
+        return "Fighters not set"
+    get_fighter_names.short_description = 'Fight Details'
+    
+    def get_scorecard_preview(self, obj):
+        """Display live scorecard preview as user enters round scores"""
+        if not obj.pk:
+            return "Save judge information first, then add round scores below"
+        
+        participants = obj.fight.participants.all() if obj.fight else []
+        if len(participants) < 2:
+            return "Fight must have two participants"
+        
+        fighter1_name = participants[0].fighter.get_full_name()
+        fighter2_name = participants[1].fighter.get_full_name()
+        
+        # Get round scores
+        round_scores = obj.round_details.all().order_by('round_number')
+        
+        if not round_scores:
+            return format_html(
+                '<div style="text-align: center; padding: 20px; background: #f9f9f9; border-radius: 5px;">'
+                '<p>No round scores entered yet.</p>'
+                '<p><strong>Add round scores using the "Round scores" section below.</strong></p>'
                 '</div>'
             )
         
-        # Determine number of rounds (could be 3 or 5)
-        max_rounds = 0
-        for scorecard in all_scorecards:
-            round_details = scorecard.round_details.all()
-            if round_details:
-                max_rounds = max(max_rounds, max(rd.round_number for rd in round_details))
-        
-        if max_rounds == 0:
-            max_rounds = 3  # Default to 3 rounds if no round details
-        
-        # Build consolidated MMADecisions.com style table
+        # Build scorecard table
         table_html = f'''
-        <div style="margin: 20px 0;">
-            <h3 style="color: #cc6600; margin-bottom: 15px;">⚖️ Official Judge Scorecards - All Judges (MMADecisions.com style)</h3>
-            
-            <!-- Official Decision Summary -->
-            <div style="margin-bottom: 20px; padding: 15px; background: #fff8f0; border-radius: 5px; border: 2px solid #cc6600;">
-                <h4 style="margin: 0 0 10px 0; color: #cc6600;">🏆 Official Decision</h4>
-                <div style="display: flex; gap: 20px; flex-wrap: wrap;">
-        '''
-        
-        # Display each judge's final score
-        for scorecard in all_scorecards:
-            score_color = 'green' if scorecard.fighter1_score > scorecard.fighter2_score else 'blue' if scorecard.fighter2_score > scorecard.fighter1_score else 'orange'
-            table_html += f'''
-                <div style="text-align: center;">
-                    <div style="font-weight: bold; margin-bottom: 5px;">{scorecard.judge_name}</div>
-                    <div style="font-size: 18px; color: {score_color}; font-weight: bold;">
-                        {scorecard.fighter1_score}-{scorecard.fighter2_score}
-                    </div>
-                </div>
-            '''
-        
-        # Determine overall winner
-        f1_wins = sum(1 for sc in all_scorecards if sc.fighter1_score > sc.fighter2_score)
-        f2_wins = sum(1 for sc in all_scorecards if sc.fighter2_score > sc.fighter1_score)
-        if f1_wins > f2_wins:
-            decision = f"{fighter1_name} wins ({f1_wins}-{f2_wins})"
-            decision_color = "green"
-        elif f2_wins > f1_wins:
-            decision = f"{fighter2_name} wins ({f2_wins}-{f1_wins})"
-            decision_color = "blue"
-        else:
-            decision = f"Split decision ({f1_wins}-{f2_wins})"
-            decision_color = "orange"
-        
-        table_html += f'''
-                </div>
-                <div style="margin-top: 15px; text-align: center;">
-                    <strong style="font-size: 20px; color: {decision_color};">Official Result: {decision}</strong>
-                </div>
-            </div>
-            
-            <!-- Round-by-Round Comparison Table -->
-            <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+        <div style="margin: 10px 0;">
+            <h4 style="color: #cc6600; text-align: center;">{obj.judge_name}</h4>
+            <table style="width: 100%; border-collapse: collapse; font-size: 14px; text-align: center;">
                 <thead>
                     <tr style="background: #cc6600; color: white;">
-                        <th style="padding: 12px; border: 1px solid #ddd; text-align: center;">Round</th>
-                        <th style="padding: 12px; border: 1px solid #ddd;">{fighter1_name}</th>
-                        <th style="padding: 12px; border: 1px solid #ddd;">{fighter2_name}</th>
-        '''
-        
-        # Add column for each judge
-        for scorecard in all_scorecards:
-            table_html += f'<th style="padding: 12px; border: 1px solid #ddd; text-align: center;">{scorecard.judge_name}</th>'
-        
-        table_html += '''
+                        <th style="border: 1px solid #ddd; padding: 8px;">ROUND</th>
+                        <th style="border: 1px solid #ddd; padding: 8px;">{fighter1_name}</th>
+                        <th style="border: 1px solid #ddd; padding: 8px;">{fighter2_name}</th>
                     </tr>
                 </thead>
                 <tbody>
         '''
         
-        # Create rows for each round
-        for round_num in range(1, max_rounds + 1):
-            table_html += f'''
-                <tr style="background: {'#f8f9fa' if round_num % 2 == 0 else 'white'};">
-                    <td style="padding: 10px; border: 1px solid #ddd; text-align: center; font-weight: bold;">
-                        Round {round_num}
-                    </td>
-                    <td style="padding: 10px; border: 1px solid #ddd; text-align: center; font-weight: bold; color: #0066cc;">
-                        {fighter1_name}
-                    </td>
-                    <td style="padding: 10px; border: 1px solid #ddd; text-align: center; font-weight: bold; color: #cc6600;">
-                        {fighter2_name}
-                    </td>
-            '''
+        total_f1 = 0
+        total_f2 = 0
+        
+        for round_score in round_scores:
+            total_f1 += round_score.fighter1_round_score
+            total_f2 += round_score.fighter2_round_score
             
-            # Add each judge's score for this round
-            for scorecard in all_scorecards:
-                round_detail = scorecard.round_details.filter(round_number=round_num).first()
-                if round_detail:
-                    winner = round_detail.get_round_winner()
-                    if winner == 'fighter1':
-                        score_color = '#0066cc'
-                        score_text = f'<strong>{round_detail.fighter1_round_score}-{round_detail.fighter2_round_score}</strong>'
-                    elif winner == 'fighter2':
-                        score_color = '#cc6600'
-                        score_text = f'<strong>{round_detail.fighter1_round_score}-{round_detail.fighter2_round_score}</strong>'
-                    elif winner == 'draw':
-                        score_color = '#ff8800'
-                        score_text = f'<strong>{round_detail.fighter1_round_score}-{round_detail.fighter2_round_score}</strong>'
-                    else:
-                        score_color = '#666'
-                        score_text = 'Unknown'
-                    
-                    table_html += f'<td style="padding: 10px; border: 1px solid #ddd; text-align: center; color: {score_color};">{score_text}</td>'
-                else:
-                    table_html += '<td style="padding: 10px; border: 1px solid #ddd; text-align: center; color: #999;">-</td>'
-            
-            table_html += '</tr>'
-        
-        # Add totals row
-        table_html += f'''
-                <tr style="background: #e9ecef; font-weight: bold;">
-                    <td style="padding: 12px; border: 1px solid #ddd; text-align: center;">
-                        <strong>TOTAL</strong>
-                    </td>
-                    <td style="padding: 12px; border: 1px solid #ddd; text-align: center; color: #0066cc;">
-                        <strong>{fighter1_name}</strong>
-                    </td>
-                    <td style="padding: 12px; border: 1px solid #ddd; text-align: center; color: #cc6600;">
-                        <strong>{fighter2_name}</strong>
-                    </td>
-        '''
-        
-        for scorecard in all_scorecards:
-            total_color = 'green' if scorecard.fighter1_score > scorecard.fighter2_score else 'blue' if scorecard.fighter2_score > scorecard.fighter1_score else 'orange'
             table_html += f'''
-                <td style="padding: 12px; border: 1px solid #ddd; text-align: center; color: {total_color};">
-                    <strong>{scorecard.fighter1_score}-{scorecard.fighter2_score}</strong>
-                </td>
-            '''
-        
-        table_html += '''
+                <tr>
+                    <td style="border: 1px solid #ddd; padding: 8px; font-weight: bold;">{round_score.round_number}</td>
+                    <td style="border: 1px solid #ddd; padding: 8px;">{round_score.fighter1_round_score}</td>
+                    <td style="border: 1px solid #ddd; padding: 8px;">{round_score.fighter2_round_score}</td>
                 </tr>
-                </tbody>
-            </table>
-            
-            <div style="margin-top: 15px; padding: 10px; background: #f0f8ff; border-radius: 3px;">
-                <p style="margin: 0; color: #666; font-size: 12px;">
-                    <strong>Scoring Criteria:</strong> 10-9 rounds are close, 10-8 rounds show clear dominance, 10-7 rounds show extreme dominance<br>
-                    <strong>Official MMA Judging:</strong> Based on Effective Striking, Effective Grappling, Control, and Aggression
-                </p>
-            </div>
+            '''
+        
+        # Add total row
+        winner_color_f1 = 'green' if total_f1 > total_f2 else '#666'
+        winner_color_f2 = 'green' if total_f2 > total_f1 else '#666'
+        
+        table_html += f'''
+                <tr style="background: #f0f0f0; font-weight: bold;">
+                    <td style="border: 1px solid #ddd; padding: 8px;">TOTAL</td>
+                    <td style="border: 1px solid #ddd; padding: 8px; color: {winner_color_f1};">{total_f1}</td>
+                    <td style="border: 1px solid #ddd; padding: 8px; color: {winner_color_f2};">{total_f2}</td>
+                </tr>
+            </tbody>
+        </table>
         </div>
         '''
         
         return format_html(table_html)
-    get_judge_scorecard_table.short_description = 'All Judges Scorecards Table'
+    get_scorecard_preview.short_description = 'Scorecard Preview'
+    
+    def get_json_import_section(self, obj):
+        """JSON import functionality for scorecards"""
+        return format_html(
+            '<div style="padding: 20px; background: #ffffff; border: 2px solid #0066cc; border-radius: 8px; margin: 10px 0;">'
+            '<h3 style="margin: 0 0 15px 0; color: #0066cc; border-bottom: 2px solid #0066cc; padding-bottom: 10px;">📥 JSON Import Instructions</h3>'
+            '<div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 15px;">'
+            '<h4 style="margin: 0 0 10px 0; color: #333;">Step 1: Paste JSON data in the field above</h4>'
+            '<p style="margin: 0 0 10px 0; color: #555;">Use this exact format:</p>'
+            '</div>'
+            '<pre style="background: #2d3748; color: #e2e8f0; padding: 15px; border-radius: 5px; font-size: 13px; line-height: 1.5; overflow-x: auto; margin: 0 0 15px 0;">'
+            '{{\n'
+            '  "judge_name": "Michael Bell",\n'
+            '  "rounds": [\n'
+            '    {{"round": 1, "fighter1_score": 9, "fighter2_score": 10}},\n'
+            '    {{"round": 2, "fighter1_score": 10, "fighter2_score": 9}},\n'
+            '    {{"round": 3, "fighter1_score": 10, "fighter2_score": 9}}\n'
+            '  ]\n'
+            '}}'
+            '</pre>'
+            '<div style="background: #e8f5e8; border: 1px solid #4caf50; padding: 12px; border-radius: 5px; margin-bottom: 10px;">'
+            '<h4 style="margin: 0 0 8px 0; color: #2e7d32;">✅ Step 2: Save the scorecard</h4>'
+            '<p style="margin: 0; color: #2e7d32;">After pasting JSON data, click "Save and continue editing" to process the import.</p>'
+            '</div>'
+            '<div style="background: #fff3cd; border: 1px solid #ffc107; padding: 12px; border-radius: 5px;">'
+            '<h4 style="margin: 0 0 8px 0; color: #856404;">⚠️ Note</h4>'
+            '<p style="margin: 0; color: #856404;">JSON import will overwrite existing round scores. Make sure your JSON data is correct before saving.</p>'
+            '</div>'
+            '</div>'
+        )
+    get_json_import_section.short_description = 'Import Instructions'
+    
+    def get_total_score(self, obj):
+        """Display total score"""
+        round_scores = obj.round_details.all()
+        if not round_scores:
+            return "No rounds scored"
+        
+        total_f1 = sum(rs.fighter1_round_score for rs in round_scores)
+        total_f2 = sum(rs.fighter2_round_score for rs in round_scores)
+        return f"{total_f1}-{total_f2}"
+    get_total_score.short_description = 'Total Score'
+    
+    def get_decision(self, obj):
+        """Display decision"""
+        round_scores = obj.round_details.all()
+        if not round_scores:
+            return "Incomplete"
+        
+        total_f1 = sum(rs.fighter1_round_score for rs in round_scores)
+        total_f2 = sum(rs.fighter2_round_score for rs in round_scores)
+        
+        if total_f1 > total_f2:
+            return format_html('<span style="color: green; font-weight: bold;">Fighter 1</span>')
+        elif total_f2 > total_f1:
+            return format_html('<span style="color: blue; font-weight: bold;">Fighter 2</span>')
+        else:
+            return format_html('<span style="color: orange; font-weight: bold;">Draw</span>')
+    get_decision.short_description = 'Decision'
     
     def get_fight_display(self, obj):
         """Display fight"""
         return str(obj.fight)
     get_fight_display.short_description = 'Fight'
+    
+    def save_model(self, request, obj, form, change):
+        """Auto-calculate totals and process JSON import when saving"""
+        # Process JSON import if provided
+        if obj.json_data and obj.json_data.strip():
+            self._process_json_import(obj, request)
+        
+        super().save_model(request, obj, form, change)
+        
+        # Calculate totals from round details
+        round_scores = obj.round_details.all()
+        if round_scores:
+            obj.fighter1_score = sum(rs.fighter1_round_score for rs in round_scores)
+            obj.fighter2_score = sum(rs.fighter2_round_score for rs in round_scores)
+            obj.save(update_fields=['fighter1_score', 'fighter2_score'])
+    
+    def _process_json_import(self, obj, request):
+        """Process JSON import data and create round scores"""
+        import json
+        from .models import RoundScore
+        
+        try:
+            data = json.loads(obj.json_data)
+            
+            # Set judge name if provided
+            if 'judge_name' in data:
+                obj.judge_name = data['judge_name']
+            
+            # Clear existing round scores
+            obj.round_details.all().delete()
+            
+            # Create new round scores
+            if 'rounds' in data:
+                for round_data in data['rounds']:
+                    RoundScore.objects.create(
+                        scorecard=obj,
+                        round_number=round_data['round'],
+                        fighter1_round_score=round_data['fighter1_score'],
+                        fighter2_round_score=round_data['fighter2_score']
+                    )
+                
+                # Clear JSON data after successful import
+                obj.json_data = ''
+                
+                # Add success message
+                from django.contrib import messages
+                messages.success(request, f'Successfully imported {len(data["rounds"])} rounds for judge {obj.judge_name}')
+            
+        except json.JSONDecodeError as e:
+            from django.contrib import messages
+            messages.error(request, f'Invalid JSON format: {str(e)}')
+        except KeyError as e:
+            from django.contrib import messages
+            messages.error(request, f'Missing required field: {str(e)}')
+        except Exception as e:
+            from django.contrib import messages
+            messages.error(request, f'Error importing JSON: {str(e)}')
 
 
 # RoundStatistics and RoundScore are now managed exclusively through their parent admin inlines

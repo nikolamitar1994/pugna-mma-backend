@@ -3,6 +3,7 @@ from django.db import models
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.contrib.postgres.search import SearchVector, SearchVectorField
 from django.contrib.postgres.indexes import GinIndex
+from django.utils import timezone
 
 
 class Fighter(models.Model):
@@ -99,6 +100,12 @@ class Fighter(models.Model):
     # Search vector for full-text search
     search_vector = SearchVectorField(null=True, blank=True)
     
+    # JSON import field for direct data population
+    json_import_data = models.TextField(
+        blank=True,
+        help_text="Paste complete fighter JSON here to automatically populate all fields and fight history. Data will be processed on save and this field will be cleared."
+    )
+    
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -145,6 +152,250 @@ class Fighter(models.Model):
         finishes = self.wins_by_ko + self.wins_by_tko + self.wins_by_submission
         return round((finishes / self.wins) * 100, 1)
     
+    def process_json_import(self):
+        """
+        Process JSON import data and populate fighter fields.
+        Returns (success: bool, message: str, fight_history_created: int)
+        """
+        if not self.json_import_data.strip():
+            return True, "No JSON data to process", 0
+        
+        try:
+            import json
+            from .templates import JSONImportProcessor
+            
+            # Parse JSON
+            json_data = json.loads(self.json_import_data)
+            
+            # Validate it's a fighter template
+            if json_data.get('entity_type') != 'fighter':
+                return False, "JSON must have entity_type: 'fighter'", 0
+            
+            # Validate the template
+            validation = JSONImportProcessor.validate_fighter_template(json_data)
+            if not validation['is_valid']:
+                return False, f"Invalid JSON: {'; '.join(validation['errors'])}", 0
+            
+            # Process fighter data
+            fighter_data = JSONImportProcessor.process_fighter_template(json_data)
+            
+            # Update fighter fields (excluding the ones we don't want to overwrite)
+            exclude_fields = {'id', 'created_at', 'updated_at', 'json_import_data', 'search_vector'}
+            
+            for field, value in fighter_data.items():
+                if field not in exclude_fields and hasattr(self, field):
+                    # Only update if the new value is not empty/None
+                    if value is not None and value != '':
+                        setattr(self, field, value)
+            
+            # Process fight history if provided
+            fight_history_data = json_data.get('fight_history', [])
+            fight_history_created = 0
+            
+            if fight_history_data:
+                fight_history_created = self._create_fight_history_from_json(fight_history_data)
+            
+            # Update data quality score
+            self.data_quality_score = self.calculate_data_quality()
+            self.last_data_update = timezone.now()
+            
+            # Clear the JSON field after successful processing
+            self.json_import_data = ''
+            
+            return True, f"Successfully imported fighter data. Created {fight_history_created} fight history records.", fight_history_created
+            
+        except json.JSONDecodeError as e:
+            return False, f"Invalid JSON format: {e}", 0
+        except Exception as e:
+            return False, f"Error processing JSON: {e}", 0
+    
+    def _create_fight_history_from_json(self, fight_history_data):
+        """Create FightHistory records from JSON data"""
+        # FightHistory is defined in this same file, no import needed
+        from events.models import Event
+        from organizations.models import Organization, WeightClass
+        
+        created_count = 0
+        
+        for fight_data in fight_history_data:
+            try:
+                # Extract fight information
+                fight_order = fight_data.get('fight_order')
+                result = fight_data.get('result')
+                
+                if not fight_order or not result:
+                    continue
+                
+                # Check if this fight record already exists
+                existing_fight = FightHistory.objects.filter(
+                    fighter=self,
+                    fight_order=fight_order
+                ).first()
+                
+                if existing_fight:
+                    continue  # Skip if already exists
+                
+                # Extract opponent info
+                opponent_info = fight_data.get('opponent_info', {})
+                fight_details = fight_data.get('fight_details', {})
+                event_info = fight_data.get('event_info', {})
+                additional_info = fight_data.get('additional_info', {})
+                
+                # Try to find existing event
+                event = None
+                if event_info.get('event_name') and event_info.get('event_date'):
+                    event = Event.objects.filter(
+                        name__iexact=event_info['event_name'],
+                        date=event_info['event_date']
+                    ).first()
+                
+                # Try to find existing organization
+                organization = None
+                if event_info.get('organization_name'):
+                    organization = Organization.objects.filter(
+                        name__iexact=event_info['organization_name']
+                    ).first()
+                
+                # Try to find weight class
+                weight_class = None
+                if event_info.get('weight_class_name') and organization:
+                    weight_class = WeightClass.objects.filter(
+                        name__iexact=event_info['weight_class_name'],
+                        organization=organization
+                    ).first()
+                
+                # Create fight history record
+                fight_history = FightHistory.objects.create(
+                    fighter=self,
+                    fight_order=fight_order,
+                    result=result,
+                    fighter_record_at_time=fight_data.get('fighter_record_at_time', ''),
+                    
+                    # Opponent information
+                    opponent_first_name=opponent_info.get('opponent_first_name', ''),
+                    opponent_last_name=opponent_info.get('opponent_last_name', ''),
+                    opponent_full_name=opponent_info.get('opponent_full_name', ''),
+                    
+                    # Fight details (convert method to lowercase for model)
+                    method=fight_details.get('method', '').lower(),
+                    method_description=fight_details.get('method_description', ''),
+                    ending_round=fight_details.get('ending_round'),
+                    ending_time=fight_details.get('ending_time', ''),
+                    scheduled_rounds=fight_details.get('scheduled_rounds'),
+                    is_title_fight=fight_details.get('is_title_fight', False),
+                    is_interim_title=fight_details.get('is_interim_title', False),
+                    title_belt=fight_details.get('title_belt', ''),
+                    
+                    # Event information
+                    event=event,
+                    event_name=event_info.get('event_name', ''),
+                    event_date=event_info.get('event_date'),
+                    organization=organization,
+                    organization_name=event_info.get('organization_name', ''),
+                    weight_class=weight_class,
+                    weight_class_name=event_info.get('weight_class_name', ''),
+                    location=event_info.get('location', ''),
+                    venue=event_info.get('venue', ''),
+                    city=event_info.get('city', ''),
+                    state=event_info.get('state', ''),
+                    country=event_info.get('country', ''),
+                    
+                    # Additional information
+                    notes=additional_info.get('notes', ''),
+                    performance_bonuses=additional_info.get('performance_bonuses', []),
+                    data_source=additional_info.get('data_source', 'json_import'),
+                    source_url=additional_info.get('source_url', '')
+                )
+                
+                # Calculate data quality
+                fight_history.data_quality_score = fight_history.calculate_data_quality()
+                fight_history.save()
+                
+                created_count += 1
+                
+            except Exception as e:
+                # Log error but continue with other fights
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Error creating fight history for {self.get_full_name()}: {e}")
+                continue
+        
+        return created_count
+    
+    def calculate_data_quality(self):
+        """Calculate data quality score based on filled fields"""
+        filled_fields = 0
+        total_important_fields = 15
+        
+        # Check important fields
+        if self.date_of_birth:
+            filled_fields += 1
+        if self.birth_place:
+            filled_fields += 1
+        if self.nationality:
+            filled_fields += 1
+        if self.height_cm:
+            filled_fields += 1
+        if self.weight_kg:
+            filled_fields += 1
+        if self.reach_cm:
+            filled_fields += 1
+        if self.stance:
+            filled_fields += 1
+        if self.fighting_out_of:
+            filled_fields += 1
+        if self.team:
+            filled_fields += 1
+        if self.wikipedia_url:
+            filled_fields += 1
+        if self.profile_image_url:
+            filled_fields += 1
+        if self.nickname:
+            filled_fields += 1
+        if self.wins or self.losses:
+            filled_fields += 1
+        if self.years_active:
+            filled_fields += 1
+        if self.social_media:
+            filled_fields += 1
+        
+        return round(filled_fields / total_important_fields, 2)
+    
+    def save(self, *args, **kwargs):
+        """Override save to process JSON import data and update computed fields"""
+        # Process JSON import data if provided
+        json_success = True
+        json_message = ""
+        fight_history_created = 0
+        
+        if self.json_import_data.strip():
+            json_success, json_message, fight_history_created = self.process_json_import()
+            
+            # Store the message for display in admin
+            if hasattr(self, '_json_import_message'):
+                self._json_import_message = json_message
+            
+            if not json_success:
+                # If JSON processing failed, we might want to still save the fighter
+                # but keep the JSON data for correction
+                pass
+        
+        # Generate display name if not set
+        if not self.display_name:
+            self.display_name = self.get_full_name()
+        
+        # Update data quality score
+        if not hasattr(self, '_skip_data_quality_update'):
+            self.data_quality_score = self.calculate_data_quality()
+        
+        # Update last data update timestamp
+        self.last_data_update = timezone.now()
+        
+        super().save(*args, **kwargs)
+        
+        # Update search vector after save
+        self.update_search_vector()
+    
     def update_search_vector(self):
         """Update search vector for full-text search"""
         # For creation, we'll set this to None and update it later
@@ -161,21 +412,6 @@ class Fighter(models.Model):
             # For new records, just set to None - we'll update after save
             self.search_vector = None
     
-    def save(self, *args, **kwargs):
-        """Override save to auto-generate display_name and update search vector"""
-        # Auto-generate display_name if not provided
-        if not self.display_name:
-            self.display_name = self.get_full_name()
-        
-        # Update search vector before save
-        self.update_search_vector()
-        
-        # Save the record
-        super().save(*args, **kwargs)
-        
-        # Update search vector after save if this was a new record
-        if not self.search_vector:
-            self.update_search_vector()
 
 
 class FighterNameVariation(models.Model):
@@ -974,3 +1210,306 @@ class RankingHistory(models.Model):
             return f"↑{self.rank_change}"
         else:
             return f"↓{abs(self.rank_change)}"
+
+
+class PendingFighter(models.Model):
+    """
+    Pending fighters discovered during scraping that don't exist in the database.
+    Used for manual review and approval workflow before creating Fighter records.
+    """
+    
+    STATUS_CHOICES = [
+        ('pending', 'Pending Review'),
+        ('approved', 'Approved - Create Fighter'),
+        ('rejected', 'Rejected'),
+        ('duplicate', 'Duplicate - Matched to Existing'),
+        ('created', 'Fighter Created'),
+    ]
+    
+    SOURCE_CHOICES = [
+        ('scraper', 'Event Scraper'),
+        ('manual', 'Manual Entry'),
+        ('api_import', 'API Import'),
+    ]
+    
+    CONFIDENCE_CHOICES = [
+        ('low', 'Low - Manual Review Required'),
+        ('medium', 'Medium - Likely New Fighter'),
+        ('high', 'High - Definitely New Fighter'),
+    ]
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    
+    # Basic fighter information discovered during scraping
+    first_name = models.CharField(max_length=100, help_text="Fighter's first name as found in source")
+    last_name = models.CharField(max_length=100, blank=True, help_text="Fighter's last name as found in source")
+    full_name_raw = models.CharField(max_length=255, help_text="Full name as originally scraped")
+    nickname = models.CharField(max_length=255, blank=True, help_text="Nickname if discovered")
+    
+    # Source context information
+    source = models.CharField(max_length=50, choices=SOURCE_CHOICES, default='scraper')
+    source_event = models.ForeignKey(
+        'events.Event', on_delete=models.SET_NULL, null=True, blank=True,
+        help_text="Event where this fighter was discovered"
+    )
+    source_url = models.URLField(blank=True, help_text="URL where fighter was discovered")
+    source_data = models.JSONField(
+        default=dict, blank=True,
+        help_text="Raw data scraped about the fighter"
+    )
+    
+    # Review workflow
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    confidence_level = models.CharField(
+        max_length=10, choices=CONFIDENCE_CHOICES, default='medium',
+        help_text="Confidence that this is a new fighter"
+    )
+    
+    # Potential matching to existing fighters
+    potential_matches = models.JSONField(
+        default=list, blank=True,
+        help_text="List of potential existing fighters this might match"
+    )
+    matched_fighter = models.ForeignKey(
+        Fighter, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='pending_duplicates',
+        help_text="Existing fighter this was matched to (if duplicate)"
+    )
+    
+    # Additional discovered information
+    nationality = models.CharField(max_length=100, blank=True)
+    weight_class_name = models.CharField(max_length=100, blank=True)
+    record_text = models.CharField(max_length=50, blank=True, help_text="Fight record as text")
+    
+    # AI-assisted data completion
+    ai_suggested_data = models.JSONField(
+        default=dict, blank=True,
+        help_text="AI-generated suggestions for complete fighter profile"
+    )
+    json_template_url = models.URLField(
+        blank=True, 
+        help_text="URL to JSON template for manual completion"
+    )
+    
+    # Review information
+    reviewed_by = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, blank=True,
+        help_text="Admin user who reviewed this pending fighter"
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_notes = models.TextField(blank=True, help_text="Notes from reviewer")
+    
+    # Created fighter reference
+    created_fighter = models.OneToOneField(
+        Fighter, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='pending_source',
+        help_text="Fighter record created from this pending fighter"
+    )
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'pending_fighters'
+        verbose_name = 'Pending Fighter'
+        verbose_name_plural = 'Pending Fighters'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['status'], name='idx_pend_fighters_status'),
+            models.Index(fields=['source'], name='idx_pend_fighters_source'),
+            models.Index(fields=['confidence_level'], name='idx_pend_fighters_conf'),
+            models.Index(fields=['first_name', 'last_name'], name='idx_pend_fighters_name'),
+            models.Index(fields=['-created_at'], name='idx_pend_fighters_created'),
+        ]
+    
+    def __str__(self):
+        return f"Pending: {self.full_name_raw} ({self.status})"
+    
+    def get_display_name(self):
+        """Get display name for the pending fighter"""
+        if self.nickname:
+            return f"{self.full_name_raw} '{self.nickname}'"
+        return self.full_name_raw
+    
+    def get_potential_match_names(self):
+        """Get list of potential match names for display"""
+        if not self.potential_matches:
+            return []
+        return [match.get('name', 'Unknown') for match in self.potential_matches]
+    
+    def create_fighter_from_pending(self, user=None):
+        """
+        Create a Fighter record from this pending fighter.
+        Returns the created Fighter instance.
+        """
+        if self.status == 'created':
+            return self.created_fighter
+        
+        if self.status != 'approved':
+            raise ValueError("Cannot create fighter from non-approved pending fighter")
+        
+        # Create fighter with basic information
+        fighter_data = {
+            'first_name': self.first_name,
+            'last_name': self.last_name,
+            'nickname': self.nickname,
+            'nationality': self.nationality,
+            'data_source': 'ai_completion' if self.ai_suggested_data else 'manual',
+        }
+        
+        # Add AI-suggested data if available
+        if self.ai_suggested_data:
+            ai_data = self.ai_suggested_data
+            
+            # Map AI suggestions to fighter fields
+            if 'date_of_birth' in ai_data:
+                fighter_data['date_of_birth'] = ai_data['date_of_birth']
+            if 'birth_place' in ai_data:
+                fighter_data['birth_place'] = ai_data['birth_place']
+            if 'height_cm' in ai_data:
+                fighter_data['height_cm'] = ai_data['height_cm']
+            if 'weight_kg' in ai_data:
+                fighter_data['weight_kg'] = ai_data['weight_kg']
+            if 'reach_cm' in ai_data:
+                fighter_data['reach_cm'] = ai_data['reach_cm']
+            if 'stance' in ai_data:
+                fighter_data['stance'] = ai_data['stance']
+            if 'fighting_out_of' in ai_data:
+                fighter_data['fighting_out_of'] = ai_data['fighting_out_of']
+            if 'team' in ai_data:
+                fighter_data['team'] = ai_data['team']
+        
+        # Create the fighter
+        fighter = Fighter.objects.create(**fighter_data)
+        
+        # Update this pending fighter
+        self.status = 'created'
+        self.created_fighter = fighter
+        self.reviewed_by = user
+        self.reviewed_at = timezone.now()
+        self.save()
+        
+        return fighter
+    
+    def mark_as_duplicate(self, existing_fighter, user=None):
+        """Mark this pending fighter as a duplicate of an existing fighter"""
+        self.status = 'duplicate'
+        self.matched_fighter = existing_fighter
+        self.reviewed_by = user
+        self.reviewed_at = timezone.now()
+        self.save()
+    
+    def generate_json_template(self):
+        """Generate JSON template for manual completion"""
+        template = {
+            'fighter_data': {
+                'first_name': self.first_name,
+                'last_name': self.last_name,
+                'nickname': self.nickname,
+                'nationality': self.nationality,
+                'date_of_birth': None,
+                'birth_place': '',
+                'height_cm': None,
+                'weight_kg': None,
+                'reach_cm': None,
+                'stance': '',
+                'fighting_out_of': '',
+                'team': '',
+                'years_active': '',
+                'profile_image_url': '',
+                'wikipedia_url': '',
+                'social_media': {}
+            },
+            'source_info': {
+                'discovered_in_event': self.source_event.name if self.source_event else '',
+                'source_url': self.source_url,
+                'raw_name': self.full_name_raw,
+                'weight_class': self.weight_class_name,
+                'record_text': self.record_text
+            },
+            'ai_suggestions': self.ai_suggested_data,
+            'completion_instructions': {
+                'required_fields': ['first_name', 'last_name'],
+                'recommended_fields': ['nationality', 'date_of_birth', 'height_cm', 'weight_kg'],
+                'optional_fields': ['nickname', 'birth_place', 'reach_cm', 'stance', 'fighting_out_of', 'team'],
+                'data_sources': ['Official websites', 'Wikipedia', 'MMA databases', 'Social media'],
+                'validation_notes': 'Verify all information from multiple sources before submission'
+            }
+        }
+        
+        return template
+    
+    @classmethod
+    def create_from_scraping(cls, fighter_name, event=None, source_url='', additional_data=None):
+        """
+        Create a pending fighter from scraping data.
+        Returns the created PendingFighter instance.
+        """
+        # Parse name components
+        name_parts = fighter_name.strip().split()
+        first_name = name_parts[0] if name_parts else ''
+        last_name = ' '.join(name_parts[1:]) if len(name_parts) > 1 else ''
+        
+        # Check for existing pending fighter with same name
+        existing_pending = cls.objects.filter(
+            full_name_raw__iexact=fighter_name,
+            status__in=['pending', 'approved']
+        ).first()
+        
+        if existing_pending:
+            return existing_pending
+        
+        # Create new pending fighter
+        pending_fighter = cls.objects.create(
+            first_name=first_name,
+            last_name=last_name,
+            full_name_raw=fighter_name,
+            source='scraper',
+            source_event=event,
+            source_url=source_url,
+            source_data=additional_data or {},
+            confidence_level='medium'  # Will be refined by matching logic
+        )
+        
+        # Run fuzzy matching to find potential duplicates
+        pending_fighter.run_fuzzy_matching()
+        
+        return pending_fighter
+    
+    def run_fuzzy_matching(self):
+        """Run fuzzy matching against existing fighters to find potential duplicates"""
+        from .services.matching import FighterMatcher
+        
+        # Find potential matches
+        fighter, confidence = FighterMatcher.find_fighter_by_name(
+            self.first_name, 
+            self.last_name,
+            context_data={'nationality': self.nationality} if self.nationality else None
+        )
+        
+        potential_matches = []
+        
+        if fighter and confidence > 0.6:
+            potential_matches.append({
+                'fighter_id': str(fighter.id),
+                'name': fighter.get_full_name(),
+                'confidence': confidence,
+                'nationality': fighter.nationality,
+                'record': fighter.get_record_string()
+            })
+            
+            # If high confidence match, mark as duplicate candidate
+            if confidence > 0.85:
+                self.confidence_level = 'low'  # Needs manual review
+                self.potential_matches = potential_matches
+                if confidence > 0.95:
+                    self.matched_fighter = fighter
+                    self.status = 'duplicate'
+        
+        # Update potential matches and confidence
+        if potential_matches:
+            self.potential_matches = potential_matches
+        else:
+            self.confidence_level = 'high'  # Likely new fighter
+        
+        self.save()

@@ -1,0 +1,300 @@
+{
+  "entity_type": "fighter",
+  "template_version": "1.0",
+  "generation_date": "2025-01-29T20:30:00Z",
+  "instructions": {
+    "purpose": "Complete fighter profile for import into MMA database",
+    "required_fields": ["first_name", "last_name"],
+    "highly_recommended": ["nationality", "date_of_birth", "height_cm", "weight_kg"],
+    "data_sources": [
+      "Official fighter websites",
+      "Wikipedia entries",
+      "UFC/organization profiles", 
+      "MMA databases (Sherdog, etc.)",
+      "Social media profiles"
+    ],
+    "validation_rules": {
+      "date_of_birth": "YYYY-MM-DD format, must be realistic fighting age",
+      "height_cm": "Integer between 120-250 cm",
+      "weight_kg": "Decimal between 40-200 kg",
+      "reach_cm": "Integer between 120-250 cm, typically close to height",
+      "stance": "One of: orthodox, southpaw, switch",
+      "nationality": "Full country name or ISO code"
+    },
+    "completion_notes": "Verify all information from multiple sources. Leave unknown fields empty rather than guessing."
+  },
+  "fighter_data": {
+    "personal_info": {
+      "first_name": "Conor",
+      "last_name": "McGregor",
+      "display_name": "Conor McGregor",
+      "nickname": "The Notorious",
+      "birth_first_name": "Conor",
+      "birth_last_name": "McGregor",
+      "date_of_birth": "1988-07-14",
+      "birth_place": "Crumlin, Dublin, Ireland",
+      "nationality": "Ireland"
+    },
+    "physical_attributes": {
+      "height_cm": 175,
+      "weight_kg": 70.0,
+      "reach_cm": 188,
+      "stance": "southpaw"
+    },
+    "career_info": {
+      "fighting_out_of": "Dublin, Ireland",
+      "team": "SBG Ireland",
+      "years_active": "2008-present",
+      "is_active": true
+    },
+    "media_links": {
+      "profile_image_url": "https://example.com/conor-mcgregor.jpg",
+      "wikipedia_url": "https://en.wikipedia.org/wiki/Conor_McGregor",
+      "social_media": {
+        "instagram": "@thenotoriousmma",
+        "twitter": "@TheNotoriousMMA",
+        "facebook": "Conor McGregor Official",
+        "tiktok": ""
+      }
+    },
+    "data_quality": {
+      "data_source": "manual",
+      "completion_confidence": 0.95,
+      "verification_notes": "Verified from multiple official sources",
+      "sources_used": [
+        "UFC.com official profile",
+        "Wikipedia",
+        "Sherdog.com",
+        "Official Instagram"
+      ]
+    }
+  },
+  "fight_history": [
+    {
+      "fight_order": 28,
+      "result": "loss",
+      "fighter_record_at_time": "22-6-0",
+      "opponent_info": {
+        "opponent_first_name": "Dustin",
+        "opponent_last_name": "Poirier",
+        "opponent_full_name": "Dustin Poirier",
+        "opponent_fighter_id": null
+      },
+      "fight_details": {
+        "method": "TKO",
+        "method_description": "Doctor Stoppage (Leg Injury)",
+        "ending_round": 1,
+        "ending_time": "5:00",
+        "scheduled_rounds": 5,
+        "is_title_fight": false,
+        "is_interim_title": false,
+        "title_belt": ""
+      },
+      "event_info": {
+        "event_name": "UFC 264: Poirier vs. McGregor 3",
+        "event_date": "2021-07-10",
+        "organization_name": "UFC",
+        "weight_class_name": "Lightweight",
+        "location": "T-Mobile Arena, Las Vegas, Nevada, United States",
+        "venue": "T-Mobile Arena",
+        "city": "Las Vegas",
+        "state": "Nevada",
+        "country": "United States"
+      },
+      "additional_info": {
+        "notes": "McGregor suffered a broken tibia and fibula at the end of round 1",
+        "performance_bonuses": [],
+        "data_source": "ufc_stats",
+        "source_url": "https://www.ufc.com/event/ufc-264"
+      }
+    },
+    {
+      "fight_order": 27,
+      "result": "loss",
+      "fighter_record_at_time": "22-5-0",
+      "opponent_info": {
+        "opponent_first_name": "Dustin",
+        "opponent_last_name": "Poirier",
+        "opponent_full_name": "Dustin Poirier",
+        "opponent_fighter_id": null
+      },
+      "fight_details": {
+        "method": "TKO",
+        "method_description": "Punches",
+        "ending_round": 2,
+        "ending_time": "2:32",
+        "scheduled_rounds": 5,
+        "is_title_fight": false,
+        "is_interim_title": false,
+        "title_belt": ""
+      },
+      "event_info": {
+        "event_name": "UFC 257: Poirier vs. McGregor 2",
+        "event_date": "2021-01-23",
+        "organization_name": "UFC",
+        "weight_class_name": "Lightweight",
+        "location": "Etihad Arena, Abu Dhabi, United Arab Emirates",
+        "venue": "Etihad Arena",
+        "city": "Abu Dhabi",
+        "state": "",
+        "country": "United Arab Emirates"
+      },
+      "additional_info": {
+        "notes": "First loss at lightweight division",
+        "performance_bonuses": [],
+        "data_source": "ufc_stats",
+        "source_url": "https://www.ufc.com/event/ufc-257"
+      }
+    },
+    {
+      "fight_order": 26,
+      "result": "win",
+      "fighter_record_at_time": "22-4-0",
+      "opponent_info": {
+        "opponent_first_name": "Donald",
+        "opponent_last_name": "Cerrone",
+        "opponent_full_name": "Donald Cerrone",
+        "opponent_fighter_id": null
+      },
+      "fight_details": {
+        "method": "TKO",
+        "method_description": "Punches and Head Kick",
+        "ending_round": 1,
+        "ending_time": "0:40",
+        "scheduled_rounds": 5,
+        "is_title_fight": false,
+        "is_interim_title": false,
+        "title_belt": ""
+      },
+      "event_info": {
+        "event_name": "UFC 246: McGregor vs. Cerrone",
+        "event_date": "2020-01-18",
+        "organization_name": "UFC",
+        "weight_class_name": "Welterweight",
+        "location": "T-Mobile Arena, Las Vegas, Nevada, United States",
+        "venue": "T-Mobile Arena",
+        "city": "Las Vegas",
+        "state": "Nevada",
+        "country": "United States"
+      },
+      "additional_info": {
+        "notes": "Return after 15-month layoff. Performance of the Night bonus.",
+        "performance_bonuses": ["Performance of the Night"],
+        "data_source": "ufc_stats",
+        "source_url": "https://www.ufc.com/event/ufc-246"
+      }
+    },
+    {
+      "fight_order": 25,
+      "result": "loss",
+      "fighter_record_at_time": "21-4-0",
+      "opponent_info": {
+        "opponent_first_name": "Khabib",
+        "opponent_last_name": "Nurmagomedov",
+        "opponent_full_name": "Khabib Nurmagomedov",
+        "opponent_fighter_id": null
+      },
+      "fight_details": {
+        "method": "Submission",
+        "method_description": "Neck Crank",
+        "ending_round": 4,
+        "ending_time": "3:03",
+        "scheduled_rounds": 5,
+        "is_title_fight": true,
+        "is_interim_title": false,
+        "title_belt": "UFC Lightweight Championship"
+      },
+      "event_info": {
+        "event_name": "UFC 229: Khabib vs. McGregor",
+        "event_date": "2018-10-06",
+        "organization_name": "UFC",
+        "weight_class_name": "Lightweight",
+        "location": "T-Mobile Arena, Las Vegas, Nevada, United States",
+        "venue": "T-Mobile Arena",
+        "city": "Las Vegas",
+        "state": "Nevada",
+        "country": "United States"
+      },
+      "additional_info": {
+        "notes": "Title fight. Post-fight brawl occurred. Highest selling UFC PPV at the time.",
+        "performance_bonuses": [],
+        "data_source": "ufc_stats",
+        "source_url": "https://www.ufc.com/event/ufc-229"
+      }
+    },
+    {
+      "fight_order": 24,
+      "result": "win",
+      "fighter_record_at_time": "21-3-0",
+      "opponent_info": {
+        "opponent_first_name": "Eddie",
+        "opponent_last_name": "Alvarez",
+        "opponent_full_name": "Eddie Alvarez",
+        "opponent_fighter_id": null
+      },
+      "fight_details": {
+        "method": "TKO",
+        "method_description": "Punches",
+        "ending_round": 2,
+        "ending_time": "3:04",
+        "scheduled_rounds": 5,
+        "is_title_fight": true,
+        "is_interim_title": false,
+        "title_belt": "UFC Lightweight Championship"
+      },
+      "event_info": {
+        "event_name": "UFC 205: Alvarez vs. McGregor",
+        "event_date": "2016-11-12",
+        "organization_name": "UFC",
+        "weight_class_name": "Lightweight",
+        "location": "Madison Square Garden, New York, New York, United States",
+        "venue": "Madison Square Garden",
+        "city": "New York",
+        "state": "New York",
+        "country": "United States"
+      },
+      "additional_info": {
+        "notes": "Won UFC Lightweight Championship. First fighter to hold titles in two weight classes simultaneously. Performance of the Night bonus.",
+        "performance_bonuses": ["Performance of the Night"],
+        "data_source": "ufc_stats",
+        "source_url": "https://www.ufc.com/event/ufc-205"
+      }
+    }
+  ],
+  "calculated_statistics": {
+    "career_record": {
+      "total_fights": 28,
+      "wins": 22,
+      "losses": 6,
+      "draws": 0,
+      "no_contests": 0
+    },
+    "win_breakdown": {
+      "wins_by_ko": 10,
+      "wins_by_tko": 8,
+      "wins_by_submission": 1,
+      "wins_by_decision": 3
+    },
+    "performance_metrics": {
+      "finish_rate": 0.86,
+      "current_streak": "2 loss streak",
+      "title_fights": 4,
+      "title_wins": 2,
+      "performance_bonuses": 12
+    }
+  },
+  "import_settings": {
+    "update_existing": false,
+    "validate_opponents": true,
+    "create_missing_events": false,
+    "link_to_existing_fights": true,
+    "auto_calculate_stats": true
+  },
+  "source_context": {
+    "import_source": "manual_research",
+    "research_date": "2025-01-29",
+    "researcher": "MMA Database Team",
+    "verification_level": "high",
+    "last_updated": "2025-01-29T20:30:00Z"
+  }
+}

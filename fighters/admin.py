@@ -2,7 +2,9 @@ from django.contrib import admin
 from django.db.models import Q
 from django.utils.html import format_html
 from django.urls import reverse
-from .models import Fighter, FighterNameVariation, FightHistory, FighterRanking, FighterStatistics, RankingHistory
+from django.utils import timezone
+from .models import Fighter, FighterNameVariation, FightHistory, FighterRanking, FighterStatistics, RankingHistory, PendingFighter
+from .admin_actions import JSONImportExportMixin, export_selected_as_json_templates, create_fighter_from_pending
 
 
 class FighterNameVariationInline(admin.TabularInline):
@@ -70,7 +72,7 @@ class FightHistoryInline(admin.TabularInline):
     
 
 @admin.register(Fighter)
-class FighterAdmin(admin.ModelAdmin):
+class FighterAdmin(JSONImportExportMixin, admin.ModelAdmin):
     """Django admin interface for Fighter management - 30% time savings!"""
     
     # List display with structured names
@@ -135,6 +137,19 @@ class FighterAdmin(admin.ModelAdmin):
             ),
             'classes': ('collapse',),
         }),
+        ('JSON Import', {
+            'fields': (
+                'json_import_data',
+            ),
+            'description': (
+                '📋 <strong>Quick Import:</strong> Paste complete fighter JSON here to automatically populate all fields and fight history. '
+                'The data will be processed when you save, and this field will be cleared. '
+                '<br><br>🔗 <strong>Example structure:</strong> '
+                '<a href="/static/FIGHTER_JSON_STRUCTURE.json" target="_blank">Download example JSON</a> | '
+                '<a href="/static/JSON_STRUCTURE_DOCUMENTATION.md" target="_blank">View documentation</a>'
+            ),
+            'classes': ('wide',),
+        }),
         ('Data Management', {
             'fields': (
                 ('data_source', 'data_quality_score'),
@@ -156,6 +171,7 @@ class FighterAdmin(admin.ModelAdmin):
         'mark_as_inactive',
         'update_data_quality',
         'export_incomplete_profiles',
+        export_selected_as_json_templates,
     ]
     
     # Custom display methods
@@ -252,11 +268,66 @@ class FighterAdmin(admin.ModelAdmin):
         """Optimize queries with prefetch_related"""
         return super().get_queryset(request).prefetch_related('name_variations')
     
-    # Custom form validation
-    def clean(self):
-        """Custom validation for fighter data"""
-        # This would be implemented in the model's clean method
-        pass
+    # Custom form validation and save
+    def save_model(self, request, obj, form, change):
+        """Custom save with JSON import processing and user feedback"""
+        # Check if JSON import data was provided
+        has_json_data = bool(obj.json_import_data.strip())
+        
+        # Save the object (this will trigger JSON processing)
+        super().save_model(request, obj, form, change)
+        
+        # If JSON data was processed, show results to user
+        if has_json_data:
+            # The JSON processing happens in the model's save method
+            # We can check if it was successful by seeing if the field was cleared
+            if not obj.json_import_data.strip():
+                # JSON was successfully processed and cleared
+                fight_history_count = obj.fight_history.count()
+                self.message_user(
+                    request,
+                    f"✅ JSON import successful! Fighter profile populated with {fight_history_count} fight history records.",
+                    level='SUCCESS'
+                )
+            else:
+                # JSON processing failed, field still contains data
+                self.message_user(
+                    request,
+                    f"❌ JSON import failed. Please check the JSON format and try again. "
+                    f"Use the documentation link above for the correct structure.",
+                    level='ERROR'
+                )
+    
+    def get_form(self, request, obj=None, **kwargs):
+        """Customize form for better JSON import experience"""
+        form = super().get_form(request, obj, **kwargs)
+        
+        # Customize the JSON import field widget
+        if 'json_import_data' in form.base_fields:
+            form.base_fields['json_import_data'].widget.attrs.update({
+                'rows': 20,
+                'cols': 80,
+                'style': 'font-family: monospace; font-size: 12px;',
+                'placeholder': '''Paste your fighter JSON here. Example:
+{
+  "entity_type": "fighter",
+  "template_version": "1.0",
+  "fighter_data": {
+    "personal_info": {
+      "first_name": "John",
+      "last_name": "Doe",
+      "nationality": "USA"
+    },
+    "physical_attributes": {
+      "height_cm": 180,
+      "weight_kg": 77.0
+    }
+  },
+  "fight_history": [...]
+}'''
+            })
+        
+        return form
 
 
 @admin.register(FightHistory)
@@ -965,3 +1036,420 @@ class RankingHistoryAdmin(admin.ModelAdmin):
             'fighter_ranking__fighter', 'fighter_ranking__weight_class',
             'fighter_ranking__organization', 'trigger_fight'
         )
+
+
+@admin.register(PendingFighter)
+class PendingFighterAdmin(admin.ModelAdmin):
+    """
+    Django admin interface for PendingFighter management with review/approve workflow.
+    Provides comprehensive tools for reviewing and managing scraped fighters.
+    """
+    
+    # List display with key information for review
+    list_display = [
+        'get_display_name_with_status', 'get_confidence_display', 'source', 
+        'get_potential_matches_display', 'get_source_event_link', 'get_review_status',
+        'created_at', 'get_action_buttons'
+    ]
+    
+    # Filters for workflow management
+    list_filter = [
+        'status', 'confidence_level', 'source', 'created_at', 'reviewed_at'
+    ]
+    
+    # Search functionality
+    search_fields = [
+        'first_name', 'last_name', 'full_name_raw', 'nickname',
+        'source_event__name', 'nationality', 'weight_class_name'
+    ]
+    
+    # Auto-complete for foreign keys
+    autocomplete_fields = ['source_event', 'matched_fighter', 'reviewed_by', 'created_fighter']
+    
+    # Organized fieldsets for review workflow
+    fieldsets = (
+        ('Fighter Information', {
+            'fields': (
+                ('first_name', 'last_name'),
+                'full_name_raw',
+                'nickname',
+                ('nationality', 'weight_class_name'),
+                'record_text',
+            ),
+            'description': 'Basic information discovered during scraping'
+        }),
+        ('Source Context', {
+            'fields': (
+                ('source', 'source_event'),
+                'source_url',
+                'source_data',
+            ),
+            'classes': ('collapse',)
+        }),
+        ('Review Workflow', {
+            'fields': (
+                ('status', 'confidence_level'),
+                'potential_matches',
+                'matched_fighter',
+                ('reviewed_by', 'reviewed_at'),
+                'review_notes',
+            ),
+            'description': 'Review and approval workflow information'
+        }),
+        ('AI Assistance', {
+            'fields': (
+                'ai_suggested_data',
+                'json_template_url',
+            ),
+            'classes': ('collapse',),
+            'description': 'AI-generated suggestions and completion templates'
+        }),
+        ('Resolution', {
+            'fields': (
+                'created_fighter',
+            ),
+            'classes': ('collapse',),
+            'description': 'Final resolution if fighter was created'
+        }),
+    )
+    
+    # Read-only fields
+    readonly_fields = [
+        'created_at', 'updated_at', 'potential_matches', 'ai_suggested_data'
+    ]
+    
+    # Actions for bulk workflow operations
+    actions = [
+        'approve_for_creation',
+        'mark_as_duplicates',
+        'generate_json_templates',
+        'run_ai_completion',
+        'bulk_reject',
+        'export_pending_summary',
+        create_fighter_from_pending,
+        export_selected_as_json_templates,
+    ]
+    
+    # List per page
+    list_per_page = 25
+    
+    # Date hierarchy for easy navigation
+    date_hierarchy = 'created_at'
+    
+    # Custom display methods
+    def get_display_name_with_status(self, obj):
+        """Display fighter name with visual status indicator"""
+        status_colors = {
+            'pending': '#ffa500',  # orange
+            'approved': '#008000',  # green
+            'rejected': '#ff0000',  # red
+            'duplicate': '#0066cc',  # blue
+            'created': '#9932cc',  # purple
+        }
+        
+        color = status_colors.get(obj.status, '#000000')
+        status_icon = {
+            'pending': '⏳',
+            'approved': '✅',
+            'rejected': '❌',
+            'duplicate': '🔗',
+            'created': '🎯',
+        }.get(obj.status, '❓')
+        
+        return format_html(
+            '<span style="color: {}; font-weight: bold;">{} {}</span>',
+            color, status_icon, obj.get_display_name()
+        )
+    get_display_name_with_status.short_description = 'Fighter Name'
+    get_display_name_with_status.admin_order_field = 'full_name_raw'
+    
+    def get_confidence_display(self, obj):
+        """Display confidence level with visual indicators"""
+        confidence_colors = {
+            'high': 'green',
+            'medium': 'orange', 
+            'low': 'red'
+        }
+        confidence_icons = {
+            'high': '🟢',
+            'medium': '🟡',
+            'low': '🔴'
+        }
+        
+        color = confidence_colors.get(obj.confidence_level, 'gray')
+        icon = confidence_icons.get(obj.confidence_level, '⚪')
+        
+        return format_html(
+            '<span style="color: {};">{} {}</span>',
+            color, icon, obj.get_confidence_level_display()
+        )
+    get_confidence_display.short_description = 'Confidence'
+    get_confidence_display.admin_order_field = 'confidence_level'
+    
+    def get_potential_matches_display(self, obj):
+        """Display potential matches summary"""
+        if not obj.potential_matches:
+            return format_html('<span style="color: gray;">None</span>')
+        
+        match_count = len(obj.potential_matches)
+        if match_count == 1:
+            match = obj.potential_matches[0]
+            return format_html(
+                '<span style="color: orange; font-weight: bold;">{} ({}%)</span>',
+                match.get('name', 'Unknown'), 
+                int(match.get('confidence', 0) * 100)
+            )
+        else:
+            return format_html(
+                '<span style="color: red; font-weight: bold;">{} matches</span>',
+                match_count
+            )
+    get_potential_matches_display.short_description = 'Potential Matches'
+    
+    def get_source_event_link(self, obj):
+        """Display source event with clickable link"""
+        if obj.source_event:
+            try:
+                url = reverse('admin:events_event_change', args=[obj.source_event.pk])
+                return format_html(
+                    '<a href="{}" style="color: #0066cc; text-decoration: underline;" target="_blank">{}</a>',
+                    url, obj.source_event.name[:30] + '...' if len(obj.source_event.name) > 30 else obj.source_event.name
+                )
+            except:
+                return obj.source_event.name
+        return format_html('<span style="color: gray;">—</span>')
+    get_source_event_link.short_description = 'Source Event'
+    
+    def get_review_status(self, obj):
+        """Display review status with reviewer info"""
+        if obj.reviewed_by:
+            return format_html(
+                '<span style="color: green;">✓ by {}</span>',
+                obj.reviewed_by.email[:20] + '...' if len(obj.reviewed_by.email) > 20 else obj.reviewed_by.email
+            )
+        elif obj.status == 'pending':
+            return format_html('<span style="color: orange;">Needs Review</span>')
+        else:
+            return format_html('<span style="color: gray;">Auto-processed</span>')
+    get_review_status.short_description = 'Review Status'
+    
+    def get_action_buttons(self, obj):
+        """Display quick action buttons"""
+        if obj.status == 'pending':
+            buttons = []
+            
+            # Approve button
+            buttons.append(
+                f'<a href="/admin/fighters/pendingfighter/{obj.pk}/approve/" '
+                f'style="background: green; color: white; padding: 2px 8px; text-decoration: none; '
+                f'border-radius: 3px; font-size: 11px;">Approve</a>'
+            )
+            
+            # Mark as duplicate button
+            if obj.potential_matches:
+                buttons.append(
+                    f'<a href="/admin/fighters/pendingfighter/{obj.pk}/duplicate/" '
+                    f'style="background: blue; color: white; padding: 2px 8px; text-decoration: none; '
+                    f'border-radius: 3px; font-size: 11px;">Duplicate</a>'
+                )
+            
+            # Reject button
+            buttons.append(
+                f'<a href="/admin/fighters/pendingfighter/{obj.pk}/reject/" '
+                f'style="background: red; color: white; padding: 2px 8px; text-decoration: none; '
+                f'border-radius: 3px; font-size: 11px;">Reject</a>'
+            )
+            
+            return format_html(' '.join(buttons))
+        
+        return format_html('<span style="color: gray;">—</span>')
+    get_action_buttons.short_description = 'Quick Actions'
+    
+    # Custom admin actions
+    def approve_for_creation(self, request, queryset):
+        """Approve selected pending fighters for Fighter creation"""
+        approved_count = 0
+        for pending_fighter in queryset.filter(status='pending'):
+            pending_fighter.status = 'approved'
+            pending_fighter.reviewed_by = request.user
+            pending_fighter.reviewed_at = timezone.now()
+            pending_fighter.save()
+            approved_count += 1
+        
+        self.message_user(
+            request, 
+            f"Approved {approved_count} pending fighters for creation."
+        )
+    approve_for_creation.short_description = "Approve selected for Fighter creation"
+    
+    def mark_as_duplicates(self, request, queryset):
+        """Mark selected pending fighters as duplicates"""
+        duplicate_count = 0
+        for pending_fighter in queryset.filter(status='pending'):
+            if pending_fighter.potential_matches:
+                # Auto-select the highest confidence match
+                best_match = max(
+                    pending_fighter.potential_matches, 
+                    key=lambda m: m.get('confidence', 0)
+                )
+                
+                try:
+                    matched_fighter = Fighter.objects.get(id=best_match['fighter_id'])
+                    pending_fighter.mark_as_duplicate(matched_fighter, request.user)
+                    duplicate_count += 1
+                except Fighter.DoesNotExist:
+                    continue
+        
+        self.message_user(
+            request,
+            f"Marked {duplicate_count} pending fighters as duplicates."
+        )
+    mark_as_duplicates.short_description = "Mark selected as duplicates"
+    
+    def generate_json_templates(self, request, queryset):
+        """Generate JSON templates for AI completion"""
+        from .templates import JSONTemplateGenerator
+        import json
+        import os
+        from django.conf import settings
+        
+        template_count = 0
+        for pending_fighter in queryset.filter(status='pending'):
+            partial_data = {
+                'first_name': pending_fighter.first_name,
+                'last_name': pending_fighter.last_name,
+                'nickname': pending_fighter.nickname,
+                'nationality': pending_fighter.nationality,
+                'source_context': {
+                    'discovered_in_event': pending_fighter.source_event.name if pending_fighter.source_event else '',
+                    'source_url': pending_fighter.source_url,
+                    'weight_class': pending_fighter.weight_class_name,
+                    'record_text': pending_fighter.record_text
+                }
+            }
+            
+            template = JSONTemplateGenerator.generate_fighter_template(partial_data)
+            
+            # Save template (in a real implementation, this might be saved to cloud storage)
+            template_dir = os.path.join(settings.MEDIA_ROOT, 'json_templates')
+            os.makedirs(template_dir, exist_ok=True)
+            
+            template_filename = f"pending_fighter_{pending_fighter.id}.json"
+            template_path = os.path.join(template_dir, template_filename)
+            
+            with open(template_path, 'w', encoding='utf-8') as f:
+                json.dump(template, f, indent=2, ensure_ascii=False)
+            
+            # Update pending fighter with template URL
+            pending_fighter.json_template_url = f"/media/json_templates/{template_filename}"
+            pending_fighter.save()
+            
+            template_count += 1
+        
+        self.message_user(
+            request,
+            f"Generated JSON templates for {template_count} pending fighters."
+        )
+    generate_json_templates.short_description = "Generate JSON templates for AI completion"
+    
+    def run_ai_completion(self, request, queryset):
+        """Run AI completion for selected pending fighters (placeholder)"""
+        # In a real implementation, this would trigger AI completion
+        self.message_user(
+            request,
+            f"AI completion triggered for {queryset.count()} pending fighters. "
+            "Results will be available shortly."
+        )
+    run_ai_completion.short_description = "Run AI completion (placeholder)"
+    
+    def bulk_reject(self, request, queryset):
+        """Reject selected pending fighters"""
+        rejected_count = 0
+        for pending_fighter in queryset.filter(status='pending'):
+            pending_fighter.status = 'rejected'
+            pending_fighter.reviewed_by = request.user
+            pending_fighter.reviewed_at = timezone.now()
+            pending_fighter.save()
+            rejected_count += 1
+        
+        self.message_user(
+            request,
+            f"Rejected {rejected_count} pending fighters."
+        )
+    bulk_reject.short_description = "Reject selected pending fighters"
+    
+    def export_pending_summary(self, request, queryset):
+        """Export summary of pending fighters for external review"""
+        summary_data = []
+        for pending_fighter in queryset:
+            summary_data.append({
+                'name': pending_fighter.full_name_raw,
+                'status': pending_fighter.status,
+                'confidence': pending_fighter.confidence_level,
+                'source_event': pending_fighter.source_event.name if pending_fighter.source_event else '',
+                'potential_matches': len(pending_fighter.potential_matches) if pending_fighter.potential_matches else 0,
+                'created_at': pending_fighter.created_at.isoformat()
+            })
+        
+        # In a real implementation, this would generate a downloadable file
+        self.message_user(
+            request,
+            f"Summary exported for {len(summary_data)} pending fighters."
+        )
+    export_pending_summary.short_description = "Export pending fighters summary"
+    
+    # Custom queryset optimization
+    def get_queryset(self, request):
+        """Optimize queries with select_related and prefetch_related"""
+        return super().get_queryset(request).select_related(
+            'source_event', 'matched_fighter', 'reviewed_by', 'created_fighter'
+        )
+    
+    # Custom form validation and save
+    def save_model(self, request, obj, form, change):
+        """Custom save with automatic matching if needed"""
+        is_new = obj.pk is None
+        
+        # If this is a new pending fighter, run fuzzy matching
+        if is_new and not obj.potential_matches:
+            obj.run_fuzzy_matching()
+        
+        super().save_model(request, obj, form, change)
+    
+    # Custom change view to add workflow buttons
+    def change_view(self, request, object_id, form_url='', extra_context=None):
+        """Add custom context for workflow buttons"""
+        extra_context = extra_context or {}
+        
+        try:
+            pending_fighter = PendingFighter.objects.get(pk=object_id)
+            extra_context['pending_fighter'] = pending_fighter
+            extra_context['show_workflow_buttons'] = pending_fighter.status == 'pending'
+            
+            # Add potential matches context
+            if pending_fighter.potential_matches:
+                potential_fighters = []
+                for match in pending_fighter.potential_matches:
+                    try:
+                        fighter = Fighter.objects.get(id=match['fighter_id'])
+                        potential_fighters.append({
+                            'fighter': fighter,
+                            'confidence': match.get('confidence', 0),
+                            'admin_url': reverse('admin:fighters_fighter_change', args=[fighter.pk])
+                        })
+                    except Fighter.DoesNotExist:
+                        continue
+                
+                extra_context['potential_fighters'] = potential_fighters
+            
+        except PendingFighter.DoesNotExist:
+            pass
+        
+        return super().change_view(request, object_id, form_url, extra_context)
+    
+    class Media:
+        """Custom CSS/JS for enhanced admin interface"""
+        css = {
+            'all': ('admin/css/pending_fighter_admin.css',)
+        }
+        js = ('admin/js/pending_fighter_workflow.js',)

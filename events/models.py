@@ -386,6 +386,7 @@ class FightStatistics(models.Model):
     
     # Additional detailed statistics
     detailed_stats = models.JSONField(default=dict, blank=True)
+    json_data = models.TextField(blank=True, help_text="Paste JSON data here to import fight statistics")
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -405,9 +406,10 @@ class Scorecard(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     fight = models.ForeignKey(Fight, on_delete=models.CASCADE, related_name='scorecards')
     judge_name = models.CharField(max_length=100)
-    fighter1_score = models.PositiveIntegerField()
-    fighter2_score = models.PositiveIntegerField()
-    round_scores = models.JSONField(help_text="Round-by-round scores as array")
+    fighter1_score = models.PositiveIntegerField(default=0)
+    fighter2_score = models.PositiveIntegerField(default=0)
+    round_scores = models.JSONField(default=dict, help_text="Round-by-round scores as array")
+    json_data = models.TextField(blank=True, help_text="Paste JSON data here to import scorecard")
     
     created_at = models.DateTimeField(auto_now_add=True)
     
