@@ -116,18 +116,34 @@ class EventAdmin(admin.ModelAdmin):
         if not fights:
             return "No fights scheduled for this event"
         
-        # Organize fights by card position
-        main_card = []
-        prelims = []
-        early_prelims = []
+        # Organize fights by fight_section (supports tournament structure)
+        from collections import defaultdict, OrderedDict
+        fight_sections = defaultdict(list)
         
         for fight in fights:
-            if fight.is_main_event or fight.fight_order <= 5:
-                main_card.append(fight)
-            elif fight.fight_order <= 9:
-                prelims.append(fight)
-            else:
-                early_prelims.append(fight)
+            section = fight.fight_section or 'Main Card'  # Default if no section
+            fight_sections[section].append(fight)
+        
+        # Define the display order for sections (tournament events first, then modern)
+        section_order = [
+            'Finals', 'Semifinals', 'Quarterfinals', 'Quarter Finals',
+            'Lightweight Finals', 'Heavyweight Finals', 'UFC Heavyweight Championship', 
+            'Lightweight Championship', 'UFC Lightweight Championship',
+            'Lightweight Semifinals', 'Heavyweight Semifinals', 
+            'Alternate bouts', 'Lightweight Alternate bout', 'Heavyweight Alternate bout',
+            'Main Card', 'Preliminary Card', 'Early Preliminary Card'
+        ]
+        
+        # Sort sections according to tournament structure
+        ordered_sections = OrderedDict()
+        for section in section_order:
+            if section in fight_sections:
+                ordered_sections[section] = fight_sections[section]
+        
+        # Add any remaining sections not in our predefined order
+        for section, fights_list in fight_sections.items():
+            if section not in ordered_sections:
+                ordered_sections[section] = fights_list
         
         def generate_fight_table(fights_list, card_name):
             """Generate Wikipedia-style table for fight card section"""
@@ -218,17 +234,11 @@ class EventAdmin(admin.ModelAdmin):
             html += '</tbody></table>'
             return html
         
-        # Build complete HTML with all sections
+        # Build complete HTML with all sections (tournament or modern structure)
         html = '<div style="margin: 10px 0;">'
         
-        if main_card:
-            html += generate_fight_table(main_card, "Main Card")
-        
-        if prelims:
-            html += generate_fight_table(prelims, "Preliminary Card")
-        
-        if early_prelims:
-            html += generate_fight_table(early_prelims, "Early Preliminary Card")
+        for section_name, fights_list in ordered_sections.items():
+            html += generate_fight_table(fights_list, section_name)
         
         html += '</div>'
         
@@ -290,12 +300,12 @@ class FightAdmin(admin.ModelAdmin):
     """Admin for individual fights - Clean separation like UFCstats.com/MMADecisions.com"""
     
     list_display = [
-        'get_fight_display', 'event', 'weight_class', 'status', 
+        'get_fight_display', 'event', 'fight_section', 'weight_class', 'status', 
         'is_main_event', 'is_title_fight', 'method', 'get_action_links'
     ]
     
     list_filter = [
-        'status', 'is_main_event', 'is_title_fight', 'method',
+        'status', 'fight_section', 'is_main_event', 'is_title_fight', 'method',
         ('event__date', admin.DateFieldListFilter),
         'event__organization',
     ]
@@ -309,7 +319,7 @@ class FightAdmin(admin.ModelAdmin):
         ('Fight Setup', {
             'fields': (
                 ('event', 'fight_order'),
-                ('weight_class', 'scheduled_rounds'),
+                ('fight_section', 'weight_class', 'scheduled_rounds'),
                 ('is_main_event', 'is_title_fight', 'is_interim_title'),
             )
         }),

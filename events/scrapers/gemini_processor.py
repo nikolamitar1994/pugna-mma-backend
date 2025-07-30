@@ -197,16 +197,22 @@ class GeminiProcessor:
         sections.append("=== EXTRACTION REQUIREMENTS ===")
         sections.append("1. Extract ALL fights from the results table in order")
         sections.append("2. Set fight_order: 1=main event, 2=co-main event, etc.")
-        sections.append("3. Identify main event and title fights correctly")
-        sections.append("4. Extract fighter Wikipedia URLs from any href attributes")
-        sections.append("5. Parse fighter names into first_name, last_name, nickname")
-        sections.append("6. Extract nationality from flag icons or country indicators")
-        sections.append("7. METHOD FORMATTING RULES:")
+        sections.append("3. Set fight_section based on the Wikipedia table section headers:")
+        sections.append("   - For modern events: 'Main Card', 'Preliminary Card', 'Early Preliminary Card'")
+        sections.append("   - For tournament events: 'Finals', 'Semifinals', 'Quarterfinals', 'Alternate bouts'")
+        sections.append("   - For weight-specific tournaments: 'Lightweight Finals', 'Heavyweight Semifinals', etc.")
+        sections.append("   - For championship bouts: 'UFC Heavyweight Championship', 'Lightweight Championship'")
+        sections.append("   - Use the EXACT section header from Wikipedia as the fight_section value")
+        sections.append("4. Identify main event and title fights correctly")
+        sections.append("5. Extract fighter Wikipedia URLs from any href attributes")
+        sections.append("6. Parse fighter names into first_name, last_name, nickname")
+        sections.append("7. Extract nationality from flag icons or country indicators")
+        sections.append("8. METHOD FORMATTING RULES:")
         sections.append("   - method should be ONLY: 'KO', 'TKO', 'Submission', 'Decision', etc.")
         sections.append("   - method_details should contain specifics: 'punches', 'rear-naked choke', 'unanimous', etc.")
         sections.append("   - NEVER include scorecards (49-45, etc.) in either field - ignore them completely")
-        sections.append("8. Set fighter results correctly: winner gets 'win', loser gets 'loss'")
-        sections.append("9. Return valid JSON matching the UFCEventSchema structure")
+        sections.append("9. Set fighter results correctly: winner gets 'win', loser gets 'loss'")
+        sections.append("10. Return valid JSON matching the UFCEventSchema structure")
         sections.append("")
         
         return "\n".join(sections)
@@ -241,6 +247,7 @@ class GeminiProcessor:
                         "type": "object",
                         "properties": {
                             "fight_order": {"type": "integer"},
+                            "fight_section": {"type": "string"},
                             "is_main_event": {"type": "boolean"},
                             "is_title_fight": {"type": "boolean"},
                             "weight_class": {"type": "string"},
