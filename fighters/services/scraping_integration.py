@@ -1,14 +1,19 @@
 """
-Scraping integration service for pending entities workflow.
-Provides hooks and utilities for integrating scraped data with the pending entities system.
+Fighter Scraping Integration Service
+===================================
+
+Enhanced service for integrating scraped fighter data with the existing Fighter model system.
+Handles fighter matching, creation, Wikipedia URL extraction, and pending fighter workflow.
 """
 
 import logging
+import re
 from typing import Dict, List, Optional, Tuple, Any
 from django.db import transaction
 from django.utils import timezone
+from django.db.models import Q
 
-from ..models import PendingFighter, Fighter
+from ..models import PendingFighter, Fighter, FighterNameVariation
 from .matching import FighterMatcher
 from events.models import Event
 
@@ -466,5 +471,446 @@ class ScrapingIntegrationService:
         return recommendations
 
 
-# Singleton instance
+class EnhancedFighterScrapingIntegration:
+    """
+    Enhanced service for integrating Wikipedia scraped fighter data.
+    Designed to work with the enhanced Wikipedia UFC scraper.
+    """
+    
+    def __init__(self, create_fighters: bool = True, use_pending_workflow: bool = False):
+        """
+        Initialize integration service
+        
+        Args:
+            create_fighters: Whether to automatically create Fighter records
+            use_pending_workflow: Whether to use PendingFighter workflow for review
+        """
+        self.create_fighters = create_fighters
+        self.use_pending_workflow = use_pending_workflow
+        
+        # Statistics tracking
+        self.stats = {
+            'fighters_found': 0,
+            'fighters_created': 0,
+            'pending_fighters_created': 0,
+            'fighters_updated': 0,
+            'wikipedia_urls_added': 0,
+            'name_variations_added': 0,
+            'matching_errors': []
+        }
+    
+    def process_scraped_fighter(self, 
+                              fighter_name: str, 
+                              wikipedia_url: Optional[str] = None,
+                              context_data: Optional[Dict[str, Any]] = None) -> Optional[Fighter]:
+        """
+        Process a fighter discovered during Wikipedia scraping
+        
+        Args:
+            fighter_name: Fighter's name as found in Wikipedia
+            wikipedia_url: Fighter's Wikipedia URL if available  
+            context_data: Additional context (event, weight class, etc.)
+            
+        Returns:
+            Fighter instance or None if using pending workflow
+        """
+        
+        if not fighter_name or not fighter_name.strip():
+            logger.warning("Empty fighter name provided")
+            return None
+        
+        fighter_name = fighter_name.strip()
+        context_data = context_data or {}
+        
+        logger.debug(f"Processing scraped fighter: {fighter_name}")
+        
+        try:
+            # Parse fighter name into components using enhanced parsing
+            name_components = self._parse_fighter_name_enhanced(fighter_name)
+            
+            # Try to find existing fighter using multiple strategies
+            existing_fighter = self._find_existing_fighter_enhanced(name_components, context_data)
+            
+            if existing_fighter:
+                logger.debug(f"Found existing fighter: {existing_fighter.get_full_name()}")
+                self.stats['fighters_found'] += 1
+                
+                # Update with new information if available
+                updated = self._update_existing_fighter(existing_fighter, wikipedia_url, fighter_name)
+                if updated:
+                    self.stats['fighters_updated'] += 1
+                
+                return existing_fighter
+            
+            # No existing fighter found
+            if self.use_pending_workflow:
+                self._create_pending_fighter_enhanced(fighter_name, name_components, wikipedia_url, context_data)
+                return None
+            elif self.create_fighters:
+                return self._create_new_fighter_enhanced(fighter_name, name_components, wikipedia_url, context_data)
+            else:
+                logger.warning(f"Fighter not found and creation disabled: {fighter_name}")
+                return None
+                
+        except Exception as e:
+            logger.exception(f"Error processing fighter {fighter_name}")
+            self.stats['matching_errors'].append(f"{fighter_name}: {str(e)}")
+            return None
+    
+    def _parse_fighter_name_enhanced(self, full_name: str) -> Dict[str, str]:
+        """
+        Enhanced fighter name parsing with better nickname handling
+        
+        Args:
+            full_name: Complete fighter name
+            
+        Returns:
+            Dictionary with name components
+        """
+        
+        # Clean the name
+        full_name = re.sub(r'\s+', ' ', full_name.strip())
+        
+        # Remove common prefixes/suffixes
+        full_name = re.sub(r'^(Mr\.|Mrs\.|Ms\.|Dr\.)\s+', '', full_name, flags=re.IGNORECASE)
+        full_name = re.sub(r'\s+(Jr\.?|Sr\.?|III?|IV)$', '', full_name, flags=re.IGNORECASE)
+        
+        # Handle nicknames in various formats
+        nickname = ''
+        
+        # Pattern 1: "John 'The Rock' Doe" or "John \"The Rock\" Doe"
+        nickname_match = re.search(r'["\']([^"\']+)["\']', full_name)
+        if nickname_match:
+            nickname = nickname_match.group(1).strip()
+            full_name = re.sub(r'\s*["\'][^"\']+["\']', '', full_name).strip()
+        
+        # Pattern 2: "John (The Rock) Doe"
+        elif '(' in full_name and ')' in full_name:
+            paren_match = re.search(r'\(([^)]+)\)', full_name)
+            if paren_match:
+                potential_nickname = paren_match.group(1).strip()
+                # Only treat as nickname if it's not obviously other info (like birth year)
+                if not re.match(r'^\d{4}$', potential_nickname):  # Not just a year
+                    nickname = potential_nickname
+                    full_name = re.sub(r'\s*\([^)]+\)', '', full_name).strip()
+        
+        # Split into parts
+        name_parts = [part for part in full_name.split() if part]
+        
+        if not name_parts:
+            return {'first_name': '', 'last_name': '', 'full_name': full_name, 'nickname': nickname}
+        
+        if len(name_parts) == 1:
+            # Single name (like Brazilian fighters: "Ronaldo", "Shogun")
+            return {
+                'first_name': name_parts[0],
+                'last_name': '',
+                'full_name': name_parts[0],
+                'nickname': nickname
+            }
+        elif len(name_parts) == 2:
+            # Standard "First Last" format
+            return {
+                'first_name': name_parts[0],
+                'last_name': name_parts[1],
+                'full_name': ' '.join(name_parts),
+                'nickname': nickname
+            }
+        else:
+            # Multiple names - first name is first part, last name is remaining parts
+            return {
+                'first_name': name_parts[0],
+                'last_name': ' '.join(name_parts[1:]),
+                'full_name': ' '.join(name_parts),
+                'nickname': nickname
+            }
+    
+    def _find_existing_fighter_enhanced(self, 
+                                      name_components: Dict[str, str], 
+                                      context_data: Dict[str, Any]) -> Optional[Fighter]:
+        """
+        Enhanced fighter matching using multiple strategies
+        
+        Args:
+            name_components: Parsed name components
+            context_data: Additional context for matching
+            
+        Returns:
+            Existing Fighter instance or None
+        """
+        
+        first_name = name_components['first_name']
+        last_name = name_components['last_name']
+        full_name = name_components['full_name']
+        nickname = name_components.get('nickname', '')
+        
+        # Strategy 1: Exact name match (case insensitive)
+        exact_match = Fighter.objects.filter(
+            first_name__iexact=first_name,
+            last_name__iexact=last_name
+        ).first()
+        
+        if exact_match:
+            logger.debug(f"Exact name match found: {exact_match.get_full_name()}")
+            return exact_match
+        
+        # Strategy 2: Display name exact match
+        display_name_match = Fighter.objects.filter(
+            display_name__iexact=full_name
+        ).first()
+        
+        if display_name_match:
+            logger.debug(f"Display name match found: {display_name_match.get_full_name()}")
+            return display_name_match
+        
+        # Strategy 3: Nickname match (if fighter has a unique nickname)
+        if nickname:
+            nickname_match = Fighter.objects.filter(
+                nickname__iexact=nickname
+            ).first()
+            
+            if nickname_match:
+                logger.debug(f"Nickname match found: {nickname_match.get_full_name()}")
+                return nickname_match
+        
+        # Strategy 4: Name variations search
+        name_variation_match = FighterNameVariation.objects.filter(
+            full_name_variation__iexact=full_name
+        ).select_related('fighter').first()
+        
+        if name_variation_match:
+            logger.debug(f"Name variation match found: {name_variation_match.fighter.get_full_name()}")
+            return name_variation_match.fighter
+        
+        # Strategy 5: Use existing FighterMatcher service with context
+        try:
+            matched_fighter, confidence = FighterMatcher.find_fighter_by_name(
+                first_name, 
+                last_name, 
+                context_data=context_data
+            )
+            
+            if matched_fighter and confidence > 0.85:  # High confidence threshold
+                logger.debug(f"FighterMatcher found fighter with confidence {confidence}: {matched_fighter.get_full_name()}")
+                return matched_fighter
+        
+        except Exception as e:
+            logger.warning(f"FighterMatcher error: {e}")
+        
+        # Strategy 6: Fuzzy matching with similarity scoring
+        if len(first_name) > 2 and len(last_name) > 2:
+            fuzzy_candidates = Fighter.objects.filter(
+                Q(first_name__istartswith=first_name[:2]) &
+                Q(last_name__istartswith=last_name[:2])
+            )[:10]  # Limit candidates
+            
+            for candidate in fuzzy_candidates:
+                similarity = self._calculate_name_similarity(full_name, candidate.get_full_name())
+                if similarity > 0.9:  # Very high similarity
+                    logger.debug(f"Fuzzy match found with similarity {similarity}: {candidate.get_full_name()}")
+                    return candidate
+        
+        return None
+    
+    def _create_new_fighter_enhanced(self, 
+                                   full_name: str,
+                                   name_components: Dict[str, str],
+                                   wikipedia_url: Optional[str],
+                                   context_data: Dict[str, Any]) -> Fighter:
+        """
+        Create new Fighter record with enhanced data handling
+        """
+        
+        logger.info(f"Creating new fighter: {full_name}")
+        
+        fighter_data = {
+            'first_name': name_components['first_name'],
+            'last_name': name_components['last_name'],
+            'display_name': full_name,
+            'data_source': 'wikipedia',
+            'wikipedia_url': wikipedia_url or '',
+            'nickname': name_components.get('nickname', '') or ''
+        }
+        
+        # Add context data if available
+        if 'nationality' in context_data:
+            fighter_data['nationality'] = context_data['nationality']
+        if 'weight_class' in context_data:
+            # Could store weight class info or related data
+            pass
+        
+        with transaction.atomic():
+            fighter = Fighter.objects.create(**fighter_data)
+            
+            # Create name variation if full name differs from computed name
+            computed_name = fighter.get_full_name()
+            if full_name != computed_name:
+                self._create_name_variation(fighter, full_name, 'scraped_variation')
+            
+            logger.info(f"Created fighter: {fighter.get_full_name()} (ID: {fighter.id})")
+            self.stats['fighters_created'] += 1
+            
+            if wikipedia_url:
+                self.stats['wikipedia_urls_added'] += 1
+        
+        return fighter
+    
+    def _create_pending_fighter_enhanced(self,
+                                      full_name: str,
+                                      name_components: Dict[str, str],
+                                      wikipedia_url: Optional[str],
+                                      context_data: Dict[str, Any]) -> None:
+        """
+        Create enhanced PendingFighter record with better data structure
+        """
+        
+        logger.info(f"Creating pending fighter: {full_name}")
+        
+        # Check if pending fighter already exists
+        existing_pending = PendingFighter.objects.filter(
+            full_name_raw=full_name,
+            status__in=['pending', 'approved']
+        ).first()
+        
+        if existing_pending:
+            logger.debug(f"Pending fighter already exists: {full_name}")
+            return None
+        
+        source_data = {
+            'parsed_name': name_components,
+            'wikipedia_url': wikipedia_url,
+            'context': context_data,
+            'scraper_version': 'enhanced_wikipedia_scraper_v1.0'
+        }
+        
+        pending_fighter = PendingFighter.objects.create(
+            first_name=name_components['first_name'],
+            last_name=name_components['last_name'],
+            full_name_raw=full_name,
+            nickname=name_components.get('nickname', '') or '',
+            source='scraper',
+            source_data=source_data,
+            confidence_level='medium'
+        )
+        
+        # Run fuzzy matching to find potential duplicates
+        pending_fighter.run_fuzzy_matching()
+        
+        logger.info(f"Created pending fighter: {full_name} (ID: {pending_fighter.id})")
+        self.stats['pending_fighters_created'] += 1
+        
+        return None
+    
+    def _update_existing_fighter(self,
+                               fighter: Fighter,
+                               wikipedia_url: Optional[str],
+                               scraped_name: str) -> bool:
+        """
+        Update existing fighter with new information from Wikipedia scraping
+        """
+        
+        updated = False
+        
+        # Add Wikipedia URL if not present
+        if wikipedia_url and not fighter.wikipedia_url:
+            fighter.wikipedia_url = wikipedia_url
+            updated = True
+            self.stats['wikipedia_urls_added'] += 1
+            logger.debug(f"Added Wikipedia URL to {fighter.get_full_name()}")
+        
+        # Create name variation if scraped name is different
+        computed_name = fighter.get_full_name()
+        if scraped_name != computed_name and scraped_name != fighter.display_name:
+            # Check if variation already exists
+            existing_variation = FighterNameVariation.objects.filter(
+                fighter=fighter,
+                full_name_variation=scraped_name
+            ).exists()
+            
+            if not existing_variation:
+                self._create_name_variation(fighter, scraped_name, 'scraped_variation')
+                self.stats['name_variations_added'] += 1
+                logger.debug(f"Added name variation '{scraped_name}' to {fighter.get_full_name()}")
+        
+        # Update data source if it was manual and now we have Wikipedia data
+        if fighter.data_source == 'manual' and wikipedia_url:
+            fighter.data_source = 'wikipedia'
+            updated = True
+        
+        if updated:
+            fighter.save()
+        
+        return updated
+    
+    def _create_name_variation(self, fighter: Fighter, variation_name: str, variation_type: str):
+        """Create a name variation record"""
+        
+        # Parse variation name
+        variation_components = self._parse_fighter_name_enhanced(variation_name)
+        
+        try:
+            FighterNameVariation.objects.create(
+                fighter=fighter,
+                first_name_variation=variation_components['first_name'],
+                last_name_variation=variation_components['last_name'],
+                full_name_variation=variation_name,
+                variation_type=variation_type,
+                source='wikipedia_scraping'
+            )
+        except Exception as e:
+            logger.warning(f"Failed to create name variation: {e}")
+    
+    def _calculate_name_similarity(self, name1: str, name2: str) -> float:
+        """
+        Calculate similarity between two names using character overlap
+        
+        Returns:
+            Similarity score between 0.0 and 1.0
+        """
+        
+        name1 = name1.lower().strip()
+        name2 = name2.lower().strip()
+        
+        if name1 == name2:
+            return 1.0
+        
+        # Character-based similarity
+        set1 = set(name1.replace(' ', ''))
+        set2 = set(name2.replace(' ', ''))
+        
+        if not set1 or not set2:
+            return 0.0
+        
+        intersection = len(set1.intersection(set2))
+        union = len(set1.union(set2))
+        
+        char_similarity = intersection / union if union > 0 else 0.0
+        
+        # Word-based similarity for better matching
+        words1 = set(name1.split())
+        words2 = set(name2.split())
+        
+        word_intersection = len(words1.intersection(words2))
+        word_union = len(words1.union(words2))
+        
+        word_similarity = word_intersection / word_union if word_union > 0 else 0.0
+        
+        # Combine both similarities with weight on word similarity
+        return (char_similarity * 0.3) + (word_similarity * 0.7)
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get integration statistics"""
+        return self.stats.copy()
+    
+    def reset_statistics(self):
+        """Reset integration statistics"""
+        for key in self.stats:
+            if isinstance(self.stats[key], list):
+                self.stats[key] = []
+            else:
+                self.stats[key] = 0
+
+
+# Singleton instances
 scraping_integration_service = ScrapingIntegrationService()
+enhanced_fighter_integration = EnhancedFighterScrapingIntegration()
