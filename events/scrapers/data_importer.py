@@ -3,11 +3,13 @@ Data Import Service for UFC Wikipedia Scraper
 Handles importing structured UFC event data into Django models
 """
 import logging
+import re
 from typing import Dict, List, Optional, Any, Tuple
 from decimal import Decimal
 from datetime import datetime
 from django.db import transaction
 from django.utils import timezone
+from django.utils.html import strip_tags
 
 from events.models import (
     Event, EventNameVariation, Fight, FightParticipant
@@ -18,6 +20,25 @@ from .schemas import UFCEventSchema, FightResultSchema, BonusAwardSchema
 from .fighter_service import FighterService
 
 logger = logging.getLogger(__name__)
+
+
+def clean_text_field(text: str, max_length: int = 255) -> str:
+    """Clean and truncate text field to prevent database errors"""
+    if not text:
+        return ''
+    
+    # Strip HTML tags
+    cleaned = strip_tags(text)
+    
+    # Remove excessive whitespace and normalize
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    
+    # Truncate to max length if needed
+    if len(cleaned) > max_length:
+        logger.warning(f"Truncating text field from {len(cleaned)} to {max_length} characters: {cleaned[:50]}...")
+        cleaned = cleaned[:max_length].strip()
+    
+    return cleaned
 
 
 class DataImporter:
@@ -178,13 +199,13 @@ class DataImporter:
         
         event_fields = {
             'organization': self.ufc_org,
-            'name': event_data.name,
+            'name': clean_text_field(event_data.name, 255),
             'date': event_date,
-            'location': event_data.location,
-            'venue': event_data.venue or '',
-            'city': event_data.city or '',
-            'state': event_data.state or '',
-            'country': event_data.country or '',
+            'location': clean_text_field(event_data.location or '', 255),
+            'venue': clean_text_field(event_data.venue or '', 255),
+            'city': clean_text_field(event_data.city or '', 100),
+            'state': clean_text_field(event_data.state or '', 100),
+            'country': clean_text_field(event_data.country or '', 100),
             'status': 'completed',  # Wikipedia events are completed
             'wikipedia_url': event_data.wikipedia_url,
         }
@@ -313,18 +334,18 @@ class DataImporter:
                 'event': event,
                 'weight_class': weight_class,
                 'fight_order': fight_data.fight_order,
-                'fight_section': fight_data.fight_section or '',
+                'fight_section': clean_text_field(fight_data.fight_section or '', 100),
                 'is_main_event': fight_data.is_main_event,
                 'is_title_fight': fight_data.is_title_fight,
                 'scheduled_rounds': fight_data.scheduled_rounds,
                 'status': 'completed',
                 'winner': winner,
-                'method': fight_data.method or '',
-                'method_details': fight_data.method_details or '',
+                'method': clean_text_field(fight_data.method or '', 50),
+                'method_details': clean_text_field(fight_data.method_details or '', 255),
                 'ending_round': fight_data.ending_round,
-                'ending_time': fight_data.ending_time or '',
-                'referee': fight_data.referee or '',
-                'notes': fight_data.notes or ''
+                'ending_time': clean_text_field(fight_data.ending_time or '', 15),
+                'referee': clean_text_field(fight_data.referee or '', 100),
+                'notes': fight_data.notes or ''  # TextField, no length limit
             }
             
             if not self.dry_run:

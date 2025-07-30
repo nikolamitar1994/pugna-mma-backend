@@ -217,7 +217,12 @@ class GeminiProcessor:
         sections.append("   - method_details should contain specifics: 'punches', 'rear-naked choke', 'unanimous', etc.")
         sections.append("   - NEVER include scorecards (49-45, etc.) in either field - ignore them completely")
         sections.append("10. Set fighter results correctly: winner gets 'win', loser gets 'loss'")
-        sections.append("11. Return valid JSON matching the UFCEventSchema structure")
+        sections.append("11. TEXT EXTRACTION RULES:")
+        sections.append("   - Extract ONLY clean text, no HTML tags or markup")
+        sections.append("   - venue should be just the venue name (e.g., 'UFC Apex', not HTML links)")
+        sections.append("   - All text fields should be concise and clean")
+        sections.append("   - Remove excessive whitespace and normalize text")
+        sections.append("12. Return valid JSON matching the UFCEventSchema structure")
         sections.append("")
         
         return "\n".join(sections)
