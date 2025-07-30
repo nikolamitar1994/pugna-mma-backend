@@ -173,9 +173,9 @@ class FightHistoryCreateUpdateSerializer(serializers.ModelSerializer):
         """Validate ending time format"""
         if value:
             import re
-            if not re.match(r'^\d{1,2}:\d{2}$', value):
+            if not re.match(r'^\d{1,3}:\d{2}$', value):
                 raise serializers.ValidationError(
-                    "Ending time must be in MM:SS format (e.g., '4:32')."
+                    "Ending time must be in MM:SS format (e.g., '4:32' or '33:45' for long fights)."
                 )
         return value
     

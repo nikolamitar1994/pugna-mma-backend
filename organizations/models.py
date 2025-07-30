@@ -39,8 +39,8 @@ class WeightClass(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name='weight_classes')
     name = models.CharField(max_length=100)
-    weight_limit_lbs = models.PositiveIntegerField()
-    weight_limit_kg = models.DecimalField(max_digits=5, decimal_places=2)
+    weight_limit_lbs = models.PositiveIntegerField(null=True, blank=True)
+    weight_limit_kg = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     gender = models.CharField(max_length=10, choices=GENDER_CHOICES, default='male')
     is_active = models.BooleanField(default=True)
     

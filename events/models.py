@@ -65,6 +65,32 @@ class Event(models.Model):
     def get_fight_count(self):
         """Get total number of fights on card"""
         return self.fights.count()
+    
+    def get_all_name_variations(self):
+        """Get all name variations including the main name"""
+        variations = [self.name]
+        variations.extend(self.name_variations.values_list('name_variation', flat=True))
+        return variations
+    
+    @classmethod
+    def find_by_name_variation(cls, name):
+        """Find an event by any of its name variations"""
+        from django.db.models import Q
+        
+        # First try exact match on main name
+        event = cls.objects.filter(name__iexact=name).first()
+        if event:
+            return event
+        
+        # Then try name variations
+        try:
+            variation = EventNameVariation.objects.filter(name_variation__iexact=name).first()
+            if variation:
+                return variation.event
+        except EventNameVariation.DoesNotExist:
+            pass
+        
+        return None
 
 
 class Fight(models.Model):
@@ -91,6 +117,7 @@ class Fight(models.Model):
     
     # Fight details
     fight_order = models.PositiveIntegerField(help_text="Order on the card (1 = main event)")
+    fight_section = models.CharField(max_length=100, blank=True, help_text="Fight section (e.g., 'Main Card', 'Preliminaries', 'Quarter Finals', 'Final')")
     is_main_event = models.BooleanField(default=False)
     is_title_fight = models.BooleanField(default=False)
     is_interim_title = models.BooleanField(default=False)
@@ -102,7 +129,7 @@ class Fight(models.Model):
     method = models.CharField(max_length=50, blank=True, help_text="KO, TKO, Submission, Decision, etc.")
     method_details = models.CharField(max_length=255, blank=True, help_text="Specific submission type, etc.")
     ending_round = models.PositiveIntegerField(null=True, blank=True)
-    ending_time = models.CharField(max_length=10, blank=True, help_text="Time format: MM:SS")
+    ending_time = models.CharField(max_length=15, blank=True, help_text="Time format: MM:SS (supports long durations)")
     referee = models.CharField(max_length=100, blank=True)
     
     # Performance bonuses
@@ -771,3 +798,38 @@ class FightStoryline(models.Model):
                 self.publication_date = datetime.fromisoformat(data['publication_date'].replace('Z', '+00:00'))
             except (ValueError, AttributeError):
                 pass
+
+
+class EventNameVariation(models.Model):
+    """Different name variations for an event to aid in matching during scraping"""
+    
+    VARIATION_TYPE_CHOICES = [
+        ('full', 'Full Name Variation'),
+        ('numbered', 'Numbered Format'),
+        ('main_event', 'Main Event Format'),
+        ('abbreviated', 'Abbreviated Format'),
+        ('alternative', 'Alternative Format'),
+    ]
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='name_variations')
+    
+    # Name variation
+    name_variation = models.CharField(max_length=255, help_text="e.g., 'UFC 300', 'UFC 300: Pereira vs. Hill', 'UFC 300 - Pereira vs. Hill'")
+    variation_type = models.CharField(max_length=20, choices=VARIATION_TYPE_CHOICES, default='alternative')
+    source = models.CharField(max_length=100, blank=True, help_text="Where this variation was found (e.g., 'Wikipedia', 'UFC.com')")
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = 'event_name_variations'
+        verbose_name = 'Event Name Variation'
+        verbose_name_plural = 'Event Name Variations'
+        unique_together = ['event', 'name_variation']
+        indexes = [
+            models.Index(fields=['name_variation'], name='idx_event_name_var'),
+            models.Index(fields=['event'], name='idx_event_name_var_event'),
+        ]
+    
+    def __str__(self):
+        return f"{self.name_variation} ({self.variation_type})"

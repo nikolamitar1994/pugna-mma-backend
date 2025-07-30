@@ -3,9 +3,17 @@ from django.utils.html import format_html
 from django.urls import reverse
 from .models import (
     Event, Fight, FightParticipant, FightStatistics, 
-    RoundStatistics, Scorecard, RoundScore, FightStoryline
+    RoundStatistics, Scorecard, RoundScore, FightStoryline,
+    EventNameVariation
 )
 
+
+class EventNameVariationInline(admin.TabularInline):
+    """Inline editing for event name variations"""
+    model = EventNameVariation
+    extra = 1
+    fields = ('name_variation', 'variation_type', 'source')
+    
 
 class FightParticipantInline(admin.TabularInline):
     """Inline editing for fight participants"""
@@ -59,6 +67,10 @@ class EventAdmin(admin.ModelAdmin):
                 'status',
             )
         }),
+        ('Event Name Variations', {
+            'fields': ('get_name_variations_info',),
+            'description': 'Manage event name variations below to aid in scraping and matching from different sources.',
+        }),
         ('Location', {
             'fields': (
                 'location',
@@ -89,8 +101,8 @@ class EventAdmin(admin.ModelAdmin):
         }),
     )
     
-    readonly_fields = ['get_fight_card_overview']
-    inlines = [FightInline]
+    readonly_fields = ['get_fight_card_overview', 'get_name_variations_info']
+    inlines = [EventNameVariationInline, FightInline]
     date_hierarchy = 'date'
     
     def get_fight_card_overview(self, obj=None):
@@ -132,6 +144,7 @@ class EventAdmin(admin.ModelAdmin):
                         <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Weight class</th>
                         <th style="border: 1px solid #ddd; padding: 8px; text-align: left;" colspan="3">Result</th>
                         <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Method</th>
+                        <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Method Description</th>
                         <th style="border: 1px solid #ddd; padding: 8px; text-align: center;">Round</th>
                         <th style="border: 1px solid #ddd; padding: 8px; text-align: center;">Time</th>
                         <th style="border: 1px solid #ddd; padding: 8px; text-align: center;">Action</th>
@@ -176,10 +189,9 @@ class EventAdmin(admin.ModelAdmin):
                     def_cell = 'vs'
                     loser_cell = 'TBA'
                 
-                # Method
+                # Method and Method Description (separate)
                 method = fight.method or '—'
-                if fight.method_details:
-                    method += f' ({fight.method_details})'
+                method_description = (fight.method_details or '—').capitalize() if fight.method_details else '—'
                 
                 # Round and Time
                 round_num = fight.ending_round or '—'
@@ -196,6 +208,7 @@ class EventAdmin(admin.ModelAdmin):
                     <td style="border: 1px solid #ddd; padding: 8px; text-align: center; font-weight: bold;">{def_cell}</td>
                     <td style="border: 1px solid #ddd; padding: 8px;">{loser_cell}</td>
                     <td style="border: 1px solid #ddd; padding: 8px;">{method}</td>
+                    <td style="border: 1px solid #ddd; padding: 8px;">{method_description}</td>
                     <td style="border: 1px solid #ddd; padding: 8px; text-align: center;">{round_num}</td>
                     <td style="border: 1px solid #ddd; padding: 8px; text-align: center;">{time}</td>
                     <td style="border: 1px solid #ddd; padding: 8px; text-align: center;">{view_button}</td>
@@ -231,6 +244,45 @@ class EventAdmin(admin.ModelAdmin):
             count
         )
     get_fight_count.short_description = 'Fights'
+    
+    def get_name_variations_info(self, obj=None):
+        """Display information about event name variations"""
+        if not obj or not obj.pk:
+            return "Save event first to add name variations"
+        
+        variations = obj.name_variations.all()
+        
+        if not variations:
+            return format_html(
+                '<div style="padding: 15px; background: #fff3e0; border: 1px solid #ff9800; border-radius: 5px;">'
+                '<h4 style="margin: 0 0 10px 0; color: #f57c00;">No Name Variations Yet</h4>'
+                '<p style="margin: 0 0 10px 0; color: #666;">Add name variations below to help with event matching during scraping.</p>'
+                '<p style="margin: 0; color: #666;"><strong>Examples for "UFC 300":</strong></p>'
+                '<ul style="margin: 5px 0 0 20px; color: #666;">'
+                '<li>UFC 300</li>'
+                '<li>UFC 300: Pereira vs. Hill</li>'
+                '<li>UFC 300 - Pereira vs. Hill</li>'
+                '</ul>'
+                '</div>'
+            )
+        
+        variations_html = '<div style="padding: 15px; background: #e8f5e8; border: 1px solid #4caf50; border-radius: 5px;">'
+        variations_html += '<h4 style="margin: 0 0 10px 0; color: #2e7d32;">✅ Event Name Variations</h4>'
+        variations_html += '<p style="margin: 0 0 10px 0; color: #666;">These variations will be used when scraping and matching events from different sources:</p>'
+        variations_html += '<ul style="margin: 0 0 0 20px;">'
+        
+        for variation in variations:
+            variations_html += f'<li style="margin: 5px 0;"><strong>{variation.name_variation}</strong> <em style="color: #666;">({variation.variation_type})'
+            if variation.source:
+                variations_html += f' - Source: {variation.source}'
+            variations_html += '</em></li>'
+        
+        variations_html += '</ul>'
+        variations_html += '<p style="margin: 10px 0 0 0; color: #666; font-size: 12px;"><em>Add more variations below as needed</em></p>'
+        variations_html += '</div>'
+        
+        return format_html(variations_html)
+    get_name_variations_info.short_description = 'Name Variations Overview'
 
 
 @admin.register(Fight)

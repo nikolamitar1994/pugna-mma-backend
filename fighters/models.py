@@ -33,17 +33,17 @@ class Fighter(models.Model):
                                 help_text="Fighter's last name (empty for single-name fighters like 'Shogun')")
     display_name = models.CharField(max_length=255, blank=True, 
                                    help_text="Preferred display name (auto-generated if empty)")
-    birth_first_name = models.CharField(max_length=100, blank=True, 
+    birth_first_name = models.CharField(max_length=100, blank=True, null=True,
                                        help_text="Legal first name at birth")
-    birth_last_name = models.CharField(max_length=100, blank=True, 
+    birth_last_name = models.CharField(max_length=100, blank=True, null=True,
                                       help_text="Legal last name at birth")
-    nickname = models.CharField(max_length=255, blank=True, 
+    nickname = models.CharField(max_length=255, blank=True, null=True,
                                help_text="Fighter nickname (e.g., 'Bones')")
     
     # Personal information
     date_of_birth = models.DateField(null=True, blank=True)
-    birth_place = models.CharField(max_length=255, blank=True)
-    nationality = models.CharField(max_length=100, blank=True)
+    birth_place = models.CharField(max_length=255, blank=True, null=True)
+    nationality = models.CharField(max_length=100, null=True, blank=True)
     
     # Physical attributes
     height_cm = models.PositiveIntegerField(
@@ -61,18 +61,18 @@ class Fighter(models.Model):
         validators=[MinValueValidator(120), MaxValueValidator(250)],
         help_text="Reach in centimeters"
     )
-    stance = models.CharField(max_length=20, choices=STANCE_CHOICES, blank=True)
+    stance = models.CharField(max_length=20, choices=STANCE_CHOICES, blank=True, null=True)
     
     # Career information
-    fighting_out_of = models.CharField(max_length=255, blank=True)
-    team = models.CharField(max_length=255, blank=True)
-    years_active = models.CharField(max_length=100, blank=True, 
+    fighting_out_of = models.CharField(max_length=255, blank=True, null=True)
+    team = models.CharField(max_length=255, blank=True, null=True)
+    years_active = models.CharField(max_length=100, blank=True, null=True,
                                    help_text="e.g., '2010-present' or '2005-2018'")
     is_active = models.BooleanField(default=True)
     
     # Media and links
-    profile_image_url = models.URLField(blank=True)
-    wikipedia_url = models.URLField(blank=True)
+    profile_image_url = models.URLField(blank=True, null=True)
+    wikipedia_url = models.URLField(blank=True, null=True)
     social_media = models.JSONField(default=dict, blank=True)
     
     # Career statistics (calculated fields)
@@ -89,7 +89,7 @@ class Fighter(models.Model):
     wins_by_decision = models.PositiveIntegerField(default=0)
     
     # Data quality and source tracking
-    data_source = models.CharField(max_length=50, choices=DATA_SOURCE_CHOICES, default='manual')
+    data_source = models.CharField(max_length=200, choices=DATA_SOURCE_CHOICES, default='manual')
     data_quality_score = models.DecimalField(
         max_digits=3, decimal_places=2, default=0.0,
         validators=[MinValueValidator(0), MaxValueValidator(1)],
@@ -552,8 +552,8 @@ class FightHistory(models.Model):
         help_text="Round the fight ended (1-12)"
     )
     ending_time = models.CharField(
-        max_length=10, blank=True,
-        help_text="Time in round when fight ended (MM:SS format)"
+        max_length=15, blank=True,
+        help_text="Time in round when fight ended (MM:SS format, supports long durations)"
     )
     scheduled_rounds = models.PositiveIntegerField(
         default=3,
@@ -593,7 +593,7 @@ class FightHistory(models.Model):
     )
     
     # Data source and quality
-    data_source = models.CharField(max_length=50, choices=DATA_SOURCE_CHOICES, default='wikipedia')
+    data_source = models.CharField(max_length=200, choices=DATA_SOURCE_CHOICES, default='wikipedia')
     source_url = models.URLField(blank=True, help_text="URL where this data was found")
     parsed_data = models.JSONField(
         default=dict, blank=True,
@@ -1277,7 +1277,7 @@ class PendingFighter(models.Model):
     )
     
     # Additional discovered information
-    nationality = models.CharField(max_length=100, blank=True)
+    nationality = models.CharField(max_length=100, null=True, blank=True)
     weight_class_name = models.CharField(max_length=100, blank=True)
     record_text = models.CharField(max_length=50, blank=True, help_text="Fight record as text")
     
