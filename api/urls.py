@@ -7,12 +7,16 @@ from .views import (
     FighterRankingViewSet, FighterStatisticsViewSet, RankingHistoryViewSet,
     # Content views
     CategoryViewSet, TagViewSet, ArticleViewSet,
-    ArticleFighterViewSet, ArticleEventViewSet, ArticleOrganizationViewSet
+    ArticleFighterViewSet, ArticleEventViewSet, ArticleOrganizationViewSet,
+    # New views
+    FighterProfileViewSet, ChampionshipHistoryViewSet, DivisionalRankingsViewSet,
+    ScorecardViewSet
 )
 
 # Create router and register viewsets
 router = DefaultRouter()
 router.register(r'fighters', FighterViewSet)
+router.register(r'fighter-profiles', FighterProfileViewSet, basename='fighter-profile')
 router.register(r'fight-history', FightHistoryViewSet)
 router.register(r'organizations', OrganizationViewSet)
 router.register(r'weight-classes', WeightClassViewSet)
@@ -23,6 +27,11 @@ router.register(r'fights', FightViewSet)
 router.register(r'rankings', FighterRankingViewSet)
 router.register(r'statistics', FighterStatisticsViewSet)
 router.register(r'ranking-history', RankingHistoryViewSet)
+router.register(r'championship-history', ChampionshipHistoryViewSet)
+router.register(r'divisional-rankings', DivisionalRankingsViewSet, basename='divisional-rankings')
+
+# Fight data endpoints
+router.register(r'scorecards', ScorecardViewSet)
 
 # Content endpoints
 router.register(r'categories', CategoryViewSet)

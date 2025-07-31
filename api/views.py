@@ -5,9 +5,9 @@ from django_filters.rest_framework import DjangoFilterBackend
 from django.contrib.postgres.search import SearchVector, SearchQuery, SearchRank
 from django.db.models import Q, F
 
-from fighters.models import Fighter, FighterNameVariation, FightHistory, FighterRanking, FighterStatistics, RankingHistory
+from fighters.models import Fighter, FighterNameVariation, FightHistory, FighterRanking, FighterStatistics, RankingHistory, ChampionshipHistory
 from organizations.models import Organization, WeightClass
-from events.models import Event, Fight, FightStatistics
+from events.models import Event, Fight, FightStatistics, Scorecard, FightParticipant
 from content.models import Article, Category, Tag, ArticleFighter, ArticleEvent, ArticleOrganization
 from content.permissions import EditorialWorkflowPermission, CanManageCategories, CanManageTags
 from content.mixins import (
@@ -29,7 +29,10 @@ from .serializers import (
     CategorySerializer, CategoryTreeSerializer, TagSerializer,
     ArticleFighterSerializer, ArticleEventSerializer, ArticleOrganizationSerializer,
     DivisionalRankingSerializer, PoundForPoundRankingSerializer,
-    FighterRankingStatsSerializer
+    FighterRankingStatsSerializer,
+    # New serializers
+    ChampionshipHistorySerializer, ScorecardSerializer, FightParticipantSerializer,
+    EventWithFightsSerializer, FighterProfileSerializer
 )
 
 
@@ -460,95 +463,161 @@ class WeightClassViewSet(viewsets.ReadOnlyModelViewSet):
     ordering = ['organization', 'weight_limit_kg']
 
 
-class EventViewSet(viewsets.ReadOnlyModelViewSet):
-    """ViewSet for Event operations"""
+class EventViewSet(viewsets.ModelViewSet):
+    """Enhanced ViewSet for Event CRUD operations with detailed fight cards"""
     
     queryset = Event.objects.all().select_related('organization').prefetch_related(
-        'fights__participants__fighter', 'fights__weight_class'
+        'fights__participants__fighter',
+        'fights__weight_class',
+        'name_variations'
+    ).prefetch_related(
+        'fights__statistics',
+        'fights__scorecards'
     )
     
     def get_serializer_class(self):
         if self.action == 'list':
             return EventListSerializer
+        elif self.action == 'retrieve':
+            return EventDetailSerializer
+        elif self.action == 'fight_card':
+            return EventWithFightsSerializer
         return EventDetailSerializer
     
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = {
         'organization': ['exact'],
-        'status': ['exact'],
-        'date': ['exact', 'gte', 'lte'],
+        'status': ['exact', 'in'],
+        'date': ['exact', 'gte', 'lte', 'year', 'month'],
+        'processing_status': ['exact'],
         'country': ['exact', 'icontains'],
     }
-    search_fields = ['name', 'location', 'venue']
-    ordering_fields = ['date', 'name']
+    search_fields = ['name', 'location', 'venue', 'city', 'country']
+    ordering_fields = ['date', 'name', 'created_at']
     ordering = ['-date']
+    
+    @action(detail=True, methods=['get'])
+    def fight_card(self, request, pk=None):
+        """Get complete fight card with all fights organized by card position"""
+        event = self.get_object()
+        fights = event.fights.select_related(
+            'weight_class',
+            'winner'
+        ).prefetch_related(
+            'participants__fighter',
+            'statistics',
+            'scorecards'
+        ).order_by('fight_order')
+        
+        # Organize fights by card position
+        fight_card = {
+            'main_event': None,
+            'co_main_event': None,
+            'main_card': [],
+            'preliminary_card': [],
+            'early_preliminary_card': []
+        }
+        
+        for fight in fights:
+            serialized_fight = FightDetailSerializer(fight, context={'request': request}).data
+            
+            if fight.card_position == 'main_event':
+                fight_card['main_event'] = serialized_fight
+            elif fight.card_position == 'co_main_event':
+                fight_card['co_main_event'] = serialized_fight
+            elif fight.card_position == 'main_card':
+                fight_card['main_card'].append(serialized_fight)
+            elif fight.card_position == 'preliminary':
+                fight_card['preliminary_card'].append(serialized_fight)
+            elif fight.card_position == 'early_preliminary':
+                fight_card['early_preliminary_card'].append(serialized_fight)
+        
+        return Response({
+            'event': EventDetailSerializer(event, context={'request': request}).data,
+            'fight_card': fight_card,
+            'total_fights': fights.count()
+        })
     
     @action(detail=False, methods=['get'])
     def upcoming(self, request):
-        """Get upcoming events"""
-        from django.utils import timezone
-        
+        """Get upcoming events across all organizations"""
+        from datetime import date
         upcoming_events = self.get_queryset().filter(
-            date__gte=timezone.now().date(),
+            date__gte=date.today(),
             status__in=['scheduled', 'live']
-        )
+        ).order_by('date')[:20]
         
-        serializer = self.get_serializer(upcoming_events, many=True)
+        serializer = EventListSerializer(upcoming_events, many=True, context={'request': request})
         return Response(serializer.data)
     
     @action(detail=False, methods=['get'])
     def recent(self, request):
         """Get recent completed events"""
-        from django.utils import timezone
-        from datetime import timedelta
-        
-        recent_date = timezone.now().date() - timedelta(days=30)
+        from datetime import date, timedelta
+        recent_date = date.today() - timedelta(days=30)
         recent_events = self.get_queryset().filter(
             date__gte=recent_date,
-            date__lt=timezone.now().date(),
             status='completed'
-        )
+        ).order_by('-date')[:20]
         
-        serializer = self.get_serializer(recent_events, many=True)
+        serializer = EventListSerializer(recent_events, many=True, context={'request': request})
         return Response(serializer.data)
 
 
-class FightViewSet(viewsets.ReadOnlyModelViewSet):
-    """ViewSet for Fight operations"""
+class FightViewSet(viewsets.ModelViewSet):
+    """Enhanced ViewSet for Fight operations with statistics and scorecards"""
     
     queryset = Fight.objects.all().select_related(
-        'event', 'weight_class', 'winner'
-    ).prefetch_related('participants__fighter')
+        'event',
+        'event__organization',
+        'weight_class',
+        'winner'
+    ).prefetch_related(
+        'participants__fighter',
+        'statistics',
+        'scorecards'
+    )
     
     def get_serializer_class(self):
         if self.action == 'list':
             return FightListSerializer
         return FightDetailSerializer
     
-    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = {
         'event': ['exact'],
+        'weight_class': ['exact'],
         'status': ['exact'],
-        'is_main_event': ['exact'],
         'is_title_fight': ['exact'],
+        'is_main_event': ['exact'],
+        'card_position': ['exact', 'in'],
         'method': ['exact', 'icontains'],
     }
     ordering_fields = ['event__date', 'fight_order']
-    ordering = ['-event__date', 'fight_order']
+    ordering = ['event', 'fight_order']
     
     @action(detail=True, methods=['get'])
     def statistics(self, request, pk=None):
-        """Get detailed statistics for a fight"""
+        """Get detailed fight statistics"""
         fight = self.get_object()
-        try:
-            stats = fight.statistics
-            serializer = FightStatisticsSerializer(stats)
+        
+        if hasattr(fight, 'statistics'):
+            serializer = FightStatisticsSerializer(fight.statistics, context={'request': request})
             return Response(serializer.data)
-        except FightStatistics.DoesNotExist:
-            return Response(
-                {'detail': 'Statistics not available for this fight.'},
-                status=status.HTTP_404_NOT_FOUND
-            )
+        
+        return Response({'detail': 'No statistics available for this fight'}, status=404)
+    
+    @action(detail=True, methods=['get'])
+    def scorecards(self, request, pk=None):
+        """Get judge scorecards for decision fights"""
+        fight = self.get_object()
+        
+        if not fight.is_decision():
+            return Response({'detail': 'This fight did not go to decision'}, status=400)
+        
+        scorecards = fight.scorecards.all()
+        serializer = ScorecardSerializer(scorecards, many=True, context={'request': request})
+        return Response(serializer.data)
 
 
 # Ranking ViewSets
@@ -939,6 +1008,169 @@ class RankingHistoryViewSet(viewsets.ReadOnlyModelViewSet):
         
         serializer = self.get_serializer(timeline, many=True)
         return Response(serializer.data)
+
+
+class FighterProfileViewSet(viewsets.ReadOnlyModelViewSet):
+    """Comprehensive fighter profile endpoint for frontend display"""
+    
+    queryset = Fighter.objects.all().select_related(
+        'statistics'
+    ).prefetch_related(
+        'fight_history',
+        'rankings',
+        'championship_history'
+    )
+    serializer_class = FighterProfileSerializer
+    lookup_field = 'id'
+    
+    @action(detail=True, methods=['get'])
+    def complete_profile(self, request, id=None):
+        """Get complete fighter profile with all related data"""
+        fighter = self.get_object()
+        
+        # Get fight history
+        fight_history = fighter.fight_history.select_related(
+            'event',
+            'event__organization',
+            'opponent'
+        ).order_by('-event_date')[:50]  # Last 50 fights
+        
+        # Get current rankings
+        current_rankings = fighter.rankings.filter(
+            Q(is_champion=True) | Q(current_rank__lte=15)
+        ).select_related('weight_class', 'organization')
+        
+        # Get championship history
+        championships = fighter.championship_history.select_related(
+            'organization',
+            'weight_class',
+            'won_from',
+            'lost_to'
+        ).order_by('-start_date')
+        
+        # Get statistics
+        stats = getattr(fighter, 'statistics', None)
+        
+        return Response({
+            'fighter': FighterDetailSerializer(fighter, context={'request': request}).data,
+            'statistics': FighterStatisticsSerializer(stats, context={'request': request}).data if stats else None,
+            'fight_history': FightHistoryListSerializer(fight_history, many=True, context={'request': request}).data,
+            'current_rankings': FighterRankingListSerializer(current_rankings, many=True, context={'request': request}).data,
+            'championship_history': ChampionshipHistorySerializer(championships, many=True, context={'request': request}).data,
+        })
+
+
+class ChampionshipHistoryViewSet(viewsets.ReadOnlyModelViewSet):
+    """ViewSet for championship history and lineage"""
+    
+    queryset = ChampionshipHistory.objects.all().select_related(
+        'fighter',
+        'organization',
+        'weight_class',
+        'won_from',
+        'lost_to',
+        'winning_fight',
+        'losing_fight'
+    )
+    serializer_class = ChampionshipHistorySerializer
+    
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filterset_fields = {
+        'organization': ['exact'],
+        'weight_class': ['exact'],
+        'fighter': ['exact'],
+        'is_current': ['exact'],
+        'title_type': ['exact'],
+    }
+    ordering_fields = ['start_date', 'end_date']
+    ordering = ['-start_date']
+    
+    @action(detail=False, methods=['get'])
+    def current_champions(self, request):
+        """Get all current champions across organizations"""
+        current_champs = self.get_queryset().filter(is_current=True)
+        
+        # Group by organization
+        org_id = request.query_params.get('organization')
+        if org_id:
+            current_champs = current_champs.filter(organization_id=org_id)
+        
+        serializer = self.get_serializer(current_champs, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    def division_lineage(self, request):
+        """Get complete championship lineage for a division"""
+        org_id = request.query_params.get('organization')
+        weight_class_id = request.query_params.get('weight_class')
+        
+        if not org_id or not weight_class_id:
+            return Response(
+                {'error': 'Both organization and weight_class parameters are required'},
+                status=400
+            )
+        
+        lineage = self.get_queryset().filter(
+            organization_id=org_id,
+            weight_class_id=weight_class_id
+        ).order_by('-start_date')
+        
+        serializer = self.get_serializer(lineage, many=True)
+        return Response(serializer.data)
+
+
+class DivisionalRankingsViewSet(viewsets.ViewSet):
+    """ViewSet for divisional rankings with champions"""
+    
+    @action(detail=False, methods=['get'])
+    def by_division(self, request):
+        """Get rankings for a specific division including champion"""
+        org_id = request.query_params.get('organization')
+        weight_class_id = request.query_params.get('weight_class')
+        
+        if not weight_class_id:
+            return Response({'error': 'weight_class parameter is required'}, status=400)
+        
+        # Get current champion
+        champion = ChampionshipHistory.objects.filter(
+            weight_class_id=weight_class_id,
+            is_current=True
+        ).select_related('fighter', 'organization', 'weight_class').first()
+        
+        # Get rankings (excluding champion)
+        rankings = FighterRanking.objects.filter(
+            weight_class_id=weight_class_id,
+            is_champion=False
+        ).select_related('fighter', 'weight_class', 'organization').order_by('current_rank')[:15]
+        
+        if org_id:
+            rankings = rankings.filter(organization_id=org_id)
+        
+        return Response({
+            'weight_class': WeightClassSerializer(
+                WeightClass.objects.get(id=weight_class_id)
+            ).data if weight_class_id else None,
+            'champion': ChampionshipHistorySerializer(champion).data if champion else None,
+            'rankings': FighterRankingListSerializer(rankings, many=True).data
+        })
+
+
+class ScorecardViewSet(viewsets.ReadOnlyModelViewSet):
+    """ViewSet for viewing fight scorecards"""
+    
+    queryset = Scorecard.objects.all().select_related(
+        'fight',
+        'fight__event',
+        'scorecard_winner'
+    )
+    serializer_class = ScorecardSerializer
+    
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = {
+        'fight': ['exact'],
+        'judge_name': ['exact', 'icontains'],
+        'is_split_decision': ['exact'],
+    }
 
 
 # Content Management ViewSets
