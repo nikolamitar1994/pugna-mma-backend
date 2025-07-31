@@ -1,7 +1,7 @@
 from rest_framework import serializers
-from fighters.models import Fighter, FighterNameVariation, FightHistory, FighterRanking, FighterStatistics, RankingHistory
+from fighters.models import Fighter, FighterNameVariation, FightHistory, FighterRanking, FighterStatistics, RankingHistory, ChampionshipHistory
 from organizations.models import Organization, WeightClass
-from events.models import Event, Fight, FightParticipant, FightStatistics
+from events.models import Event, Fight, FightStatistics, Scorecard, FightParticipant
 from content.models import Article, Category, Tag, ArticleFighter, ArticleEvent, ArticleOrganization
 
 
@@ -331,21 +331,32 @@ class FightListSerializer(serializers.ModelSerializer):
 
 
 class FightDetailSerializer(serializers.ModelSerializer):
-    """Detailed serializer for individual fights"""
+    """Detailed serializer for Fight with participants"""
     
+    event_name = serializers.CharField(source='event.name', read_only=True)
+    weight_class_name = serializers.CharField(source='weight_class.name', read_only=True)
+    winner_name = serializers.CharField(source='winner.get_full_name', read_only=True)
     participants = FightParticipantSerializer(many=True, read_only=True)
-    weight_class = WeightClassSerializer(read_only=True)
-    winner = FighterListSerializer(read_only=True)
     
     class Meta:
         model = Fight
         fields = [
-            'id', 'fight_order', 'weight_class', 'participants',
-            'is_main_event', 'is_title_fight', 'is_interim_title',
-            'scheduled_rounds', 'status', 'winner', 'method', 'method_details',
-            'ending_round', 'ending_time', 'referee', 'performance_bonuses',
-            'notes', 'created_at', 'updated_at'
+            'id', 'event', 'event_name', 'weight_class', 'weight_class_name',
+            'fight_order', 'card_position', 'fight_section',
+            'is_main_event', 'is_co_main_event', 'is_title_fight', 
+            'is_interim_title', 'is_tournament_fight', 'tournament_info',
+            'scheduled_rounds', 'championship_rounds',
+            'status', 'winner', 'winner_name',
+            'method', 'method_details', 'ending_round', 'ending_time',
+            'referee', 'decision_type',
+            'is_unanimous_decision', 'is_split_decision', 
+            'is_majority_decision', 'is_technical_decision',
+            'performance_bonuses', 'bonus_amount',
+            'is_catchweight', 'catchweight_limit', 'special_rules',
+            'participants', 'notes',
+            'created_at', 'updated_at'
         ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
 
 
 class EventListSerializer(serializers.ModelSerializer):
@@ -382,22 +393,162 @@ class EventDetailSerializer(serializers.ModelSerializer):
 
 
 class FightStatisticsSerializer(serializers.ModelSerializer):
-    """Serializer for fight statistics"""
-    
-    fighter1 = FighterListSerializer(read_only=True)
-    fighter2 = FighterListSerializer(read_only=True)
+    """Enhanced serializer for detailed fight statistics"""
+    fighter1_name = serializers.CharField(source='fighter1.get_full_name', read_only=True)
+    fighter2_name = serializers.CharField(source='fighter2.get_full_name', read_only=True)
     
     class Meta:
         model = FightStatistics
         fields = [
-            'id', 'fighter1', 'fighter2',
-            'fighter1_strikes_landed', 'fighter1_strikes_attempted',
-            'fighter2_strikes_landed', 'fighter2_strikes_attempted',
-            'fighter1_takedowns', 'fighter1_takedown_attempts',
-            'fighter2_takedowns', 'fighter2_takedown_attempts',
-            'fighter1_control_time', 'fighter2_control_time',
-            'detailed_stats'
+            'id', 'fight',
+            'fighter1', 'fighter1_name',
+            'fighter2', 'fighter2_name',
+            # Total strikes
+            'fighter1_total_strikes_landed', 'fighter1_total_strikes_attempted',
+            'fighter2_total_strikes_landed', 'fighter2_total_strikes_attempted',
+            # Significant strikes
+            'fighter1_significant_strikes_landed', 'fighter1_significant_strikes_attempted',
+            'fighter2_significant_strikes_landed', 'fighter2_significant_strikes_attempted',
+            # Strikes by target
+            'fighter1_head_strikes_landed', 'fighter1_head_strikes_attempted',
+            'fighter1_body_strikes_landed', 'fighter1_body_strikes_attempted',
+            'fighter1_leg_strikes_landed', 'fighter1_leg_strikes_attempted',
+            'fighter2_head_strikes_landed', 'fighter2_head_strikes_attempted',
+            'fighter2_body_strikes_landed', 'fighter2_body_strikes_attempted',
+            'fighter2_leg_strikes_landed', 'fighter2_leg_strikes_attempted',
+            # Strikes by position
+            'fighter1_distance_strikes_landed', 'fighter1_distance_strikes_attempted',
+            'fighter1_clinch_strikes_landed', 'fighter1_clinch_strikes_attempted',
+            'fighter1_ground_strikes_landed', 'fighter1_ground_strikes_attempted',
+            'fighter2_distance_strikes_landed', 'fighter2_distance_strikes_attempted',
+            'fighter2_clinch_strikes_landed', 'fighter2_clinch_strikes_attempted',
+            'fighter2_ground_strikes_landed', 'fighter2_ground_strikes_attempted',
+            # Grappling
+            'fighter1_takedowns_landed', 'fighter1_takedown_attempts',
+            'fighter1_takedown_accuracy', 'fighter1_takedown_defense',
+            'fighter1_submission_attempts', 'fighter1_guard_passes', 'fighter1_reversals',
+            'fighter2_takedowns_landed', 'fighter2_takedown_attempts',
+            'fighter2_takedown_accuracy', 'fighter2_takedown_defense',
+            'fighter2_submission_attempts', 'fighter2_guard_passes', 'fighter2_reversals',
+            # Control time
+            'fighter1_control_time', 'fighter1_ground_control_time', 'fighter1_clinch_control_time',
+            'fighter2_control_time', 'fighter2_ground_control_time', 'fighter2_clinch_control_time',
+            # Advanced metrics
+            'fighter1_knockdowns', 'fighter2_knockdowns',
+            'fighter1_significant_strike_accuracy', 'fighter2_significant_strike_accuracy',
+            'fighter1_strikes_absorbed_per_minute', 'fighter2_strikes_absorbed_per_minute',
+            # Metadata
+            'data_source', 'source_url',
+            'created_at', 'updated_at'
         ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class ScorecardSerializer(serializers.ModelSerializer):
+    """Serializer for judge scorecards"""
+    judge_name = serializers.CharField()
+    scorecard_winner_name = serializers.CharField(source='scorecard_winner.get_full_name', read_only=True)
+    round_by_round = serializers.CharField(source='get_round_by_round_display', read_only=True)
+    
+    class Meta:
+        model = Scorecard
+        fields = [
+            'id', 'fight', 'judge_name',
+            'scoring_system',
+            'fighter1_total_score', 'fighter2_total_score',
+            'scorecard_winner', 'scorecard_winner_name',
+            'round_scores', 'round_by_round',
+            'fighter1_point_deductions', 'fighter2_point_deductions',
+            'deduction_reasons',
+            'notes', 'is_split_decision',
+            'data_source', 'source_url',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'scorecard_winner']
+
+
+class ChampionshipHistorySerializer(serializers.ModelSerializer):
+    """Serializer for championship history records"""
+    fighter_name = serializers.CharField(source='fighter.get_full_name', read_only=True)
+    organization_name = serializers.CharField(source='organization.name', read_only=True)
+    weight_class_name = serializers.CharField(source='weight_class.name', read_only=True)
+    won_from_name = serializers.CharField(source='won_from.get_full_name', read_only=True, allow_null=True)
+    lost_to_name = serializers.CharField(source='lost_to.get_full_name', read_only=True, allow_null=True)
+    
+    class Meta:
+        model = ChampionshipHistory
+        fields = [
+            'id', 'fighter', 'fighter_name',
+            'organization', 'organization_name',
+            'weight_class', 'weight_class_name',
+            'title_type', 'reign_number',
+            'start_date', 'end_date', 'is_current',
+            'won_from', 'won_from_name', 'winning_fight', 'winning_method',
+            'lost_to', 'lost_to_name', 'losing_fight', 'end_reason',
+            'title_defenses', 'days_as_champion',
+            'notable_wins', 'notes',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'days_as_champion', 'created_at', 'updated_at']
+
+
+class EventWithFightsSerializer(serializers.ModelSerializer):
+    """Serializer for event with complete fight card"""
+    organization_name = serializers.CharField(source='organization.name', read_only=True)
+    fight_count = serializers.IntegerField(source='get_fight_count', read_only=True)
+    main_event = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Event
+        fields = [
+            'id', 'name', 'event_number',
+            'organization', 'organization_name',
+            'date', 'location', 'venue', 'city', 'state', 'country',
+            'status', 'attendance', 'gate_revenue', 'ppv_buys',
+            'poster_url', 'wikipedia_url',
+            'fight_count', 'main_event',
+            'processing_status', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+    
+    def get_main_event(self, obj):
+        main_event = obj.get_main_event()
+        if main_event:
+            return FightListSerializer(main_event).data
+        return None
+
+
+class FighterProfileSerializer(serializers.ModelSerializer):
+    """Comprehensive fighter profile serializer"""
+    full_name = serializers.CharField(source='get_full_name', read_only=True)
+    display_name = serializers.CharField(source='get_display_name', read_only=True)
+    record_string = serializers.CharField(source='get_record_string', read_only=True)
+    finish_rate = serializers.DecimalField(source='get_finish_rate', max_digits=5, decimal_places=1, read_only=True)
+    age = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Fighter
+        fields = [
+            'id', 'first_name', 'last_name', 'full_name',
+            'display_name', 'birth_first_name', 'birth_last_name', 'nickname',
+            'date_of_birth', 'age', 'birth_place', 'nationality',
+            'height_cm', 'weight_kg', 'reach_cm', 'stance',
+            'fighting_out_of', 'team', 'years_active', 'is_active',
+            'profile_image_url', 'wikipedia_url', 'social_media',
+            'total_fights', 'wins', 'losses', 'draws', 'no_contests',
+            'record_string', 'finish_rate',
+            'wins_by_ko', 'wins_by_tko', 'wins_by_submission', 'wins_by_decision',
+            'data_source', 'data_quality_score', 'last_data_update',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+    
+    def get_age(self, obj):
+        if obj.date_of_birth:
+            from datetime import date
+            today = date.today()
+            return today.year - obj.date_of_birth.year - ((today.month, today.day) < (obj.date_of_birth.month, obj.date_of_birth.day))
+        return None
 
 
 # Ranking Serializers

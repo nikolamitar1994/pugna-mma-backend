@@ -141,17 +141,42 @@ class Fight(models.Model):
         ('no_contest', 'No Contest'),
     ]
     
+    CARD_POSITION_CHOICES = [
+        ('main_event', 'Main Event'),
+        ('co_main_event', 'Co-Main Event'),
+        ('main_card', 'Main Card'),
+        ('preliminary', 'Preliminary Card'),
+        ('early_preliminary', 'Early Preliminary Card'),
+    ]
+    
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='fights')
     weight_class = models.ForeignKey(WeightClass, on_delete=models.SET_NULL, null=True, blank=True)
     
     # Fight details
     fight_order = models.PositiveIntegerField(help_text="Order on the card (1 = main event)")
-    fight_section = models.CharField(max_length=100, blank=True, help_text="Fight section (e.g., 'Main Card', 'Preliminaries', 'Quarter Finals', 'Final')")
+    card_position = models.CharField(
+        max_length=20, 
+        choices=CARD_POSITION_CHOICES, 
+        default='main_card',
+        help_text="Position on the fight card"
+    )
+    fight_section = models.CharField(
+        max_length=100, 
+        blank=True, 
+        help_text="Custom section name (e.g., 'Quarter Finals', 'Tournament Final')"
+    )
+    
+    # Fight significance
     is_main_event = models.BooleanField(default=False)
+    is_co_main_event = models.BooleanField(default=False)
     is_title_fight = models.BooleanField(default=False)
     is_interim_title = models.BooleanField(default=False)
+    is_tournament_fight = models.BooleanField(default=False)
+    tournament_info = models.JSONField(default=dict, blank=True,
+                                      help_text="Tournament details (round, bracket, etc.)")
     scheduled_rounds = models.PositiveIntegerField(default=3)
+    championship_rounds = models.BooleanField(default=False, help_text="5 rounds for title/main event")
     
     # Fight outcome
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='scheduled')
@@ -162,9 +187,26 @@ class Fight(models.Model):
     ending_time = models.CharField(max_length=15, blank=True, help_text="Time format: MM:SS (supports long durations)")
     referee = models.CharField(max_length=100, blank=True)
     
+    # Decision details (if applicable)
+    decision_type = models.CharField(max_length=50, blank=True,
+                                    help_text="Unanimous, Split, Majority, Draw type")
+    is_unanimous_decision = models.BooleanField(default=False)
+    is_split_decision = models.BooleanField(default=False)
+    is_majority_decision = models.BooleanField(default=False)
+    is_technical_decision = models.BooleanField(default=False)
+    
     # Performance bonuses
     performance_bonuses = models.JSONField(default=list, blank=True, 
-                                         help_text="List of bonus types awarded")
+                                         help_text="List of bonus types awarded (FOTN, POTN, etc.)")
+    bonus_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True,
+                                      help_text="Total bonus amount earned")
+    
+    # Catchweight and special circumstances
+    is_catchweight = models.BooleanField(default=False)
+    catchweight_limit = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True,
+                                           help_text="Catchweight limit in pounds")
+    special_rules = models.JSONField(default=dict, blank=True,
+                                    help_text="Any special rules or circumstances")
     
     # Metadata
     notes = models.TextField(blank=True)
@@ -179,7 +221,9 @@ class Fight(models.Model):
         indexes = [
             models.Index(fields=['event'], name='idx_fights_event'),
             models.Index(fields=['status'], name='idx_fights_status'),
-            models.Index(fields=['event', 'fight_order'], name='idx_fights_date'),
+            models.Index(fields=['event', 'fight_order'], name='idx_fights_event_order'),
+            models.Index(fields=['card_position'], name='idx_fights_card_position'),
+            models.Index(fields=['is_title_fight'], name='idx_fights_title'),
         ]
         unique_together = ['event', 'fight_order']
     
@@ -189,6 +233,32 @@ class Fight(models.Model):
             return f"{fighters[0].fighter.get_full_name()} vs {fighters[1].fighter.get_full_name()}"
         return f"Fight {self.fight_order} - {self.event.name}"
     
+    def save(self, *args, **kwargs):
+        """Override save to set fight card position flags"""
+        # Auto-set boolean flags based on card position
+        if self.card_position == 'main_event':
+            self.is_main_event = True
+            self.is_co_main_event = False
+            if not self.championship_rounds and not self.is_title_fight:
+                self.championship_rounds = True  # Main events are 5 rounds
+        elif self.card_position == 'co_main_event':
+            self.is_main_event = False
+            self.is_co_main_event = True
+        else:
+            self.is_main_event = False
+            self.is_co_main_event = False
+        
+        # Set championship rounds for title fights
+        if self.is_title_fight:
+            self.championship_rounds = True
+            self.scheduled_rounds = 5
+        elif self.championship_rounds:
+            self.scheduled_rounds = 5
+        else:
+            self.scheduled_rounds = 3
+        
+        super().save(*args, **kwargs)
+    
     def get_fighters(self):
         """Get both fighters in the fight"""
         return [p.fighter for p in self.participants.all()[:2]]
@@ -196,6 +266,12 @@ class Fight(models.Model):
     def is_decision(self):
         """Check if fight went to decision"""
         return 'decision' in self.method.lower() if self.method else False
+    
+    def get_card_display(self):
+        """Get human-readable card position"""
+        if self.fight_section:
+            return self.fight_section
+        return self.get_card_position_display()
     
     # Interconnected Fight History Methods
     
@@ -418,31 +494,98 @@ class FightParticipant(models.Model):
 
 
 class FightStatistics(models.Model):
-    """Detailed fight statistics"""
+    """Detailed fight statistics - enhanced for comprehensive MMA data"""
     
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     fight = models.OneToOneField(Fight, on_delete=models.CASCADE, related_name='statistics')
     fighter1 = models.ForeignKey(Fighter, on_delete=models.CASCADE, related_name='fight_stats_1')
     fighter2 = models.ForeignKey(Fighter, on_delete=models.CASCADE, related_name='fight_stats_2')
     
-    # Striking statistics
-    fighter1_strikes_landed = models.PositiveIntegerField(default=0)
-    fighter1_strikes_attempted = models.PositiveIntegerField(default=0)
-    fighter2_strikes_landed = models.PositiveIntegerField(default=0)
-    fighter2_strikes_attempted = models.PositiveIntegerField(default=0)
+    # Total Striking Statistics
+    fighter1_total_strikes_landed = models.PositiveIntegerField(default=0)
+    fighter1_total_strikes_attempted = models.PositiveIntegerField(default=0)
+    fighter2_total_strikes_landed = models.PositiveIntegerField(default=0)
+    fighter2_total_strikes_attempted = models.PositiveIntegerField(default=0)
+    
+    # Significant Strikes (Power strikes that cause damage)
+    fighter1_significant_strikes_landed = models.PositiveIntegerField(default=0)
+    fighter1_significant_strikes_attempted = models.PositiveIntegerField(default=0)
+    fighter2_significant_strikes_landed = models.PositiveIntegerField(default=0)
+    fighter2_significant_strikes_attempted = models.PositiveIntegerField(default=0)
+    
+    # Strikes by Target
+    fighter1_head_strikes_landed = models.PositiveIntegerField(default=0)
+    fighter1_head_strikes_attempted = models.PositiveIntegerField(default=0)
+    fighter1_body_strikes_landed = models.PositiveIntegerField(default=0)
+    fighter1_body_strikes_attempted = models.PositiveIntegerField(default=0)
+    fighter1_leg_strikes_landed = models.PositiveIntegerField(default=0)
+    fighter1_leg_strikes_attempted = models.PositiveIntegerField(default=0)
+    
+    fighter2_head_strikes_landed = models.PositiveIntegerField(default=0)
+    fighter2_head_strikes_attempted = models.PositiveIntegerField(default=0)
+    fighter2_body_strikes_landed = models.PositiveIntegerField(default=0)
+    fighter2_body_strikes_attempted = models.PositiveIntegerField(default=0)
+    fighter2_leg_strikes_landed = models.PositiveIntegerField(default=0)
+    fighter2_leg_strikes_attempted = models.PositiveIntegerField(default=0)
+    
+    # Strikes by Position
+    fighter1_distance_strikes_landed = models.PositiveIntegerField(default=0)
+    fighter1_distance_strikes_attempted = models.PositiveIntegerField(default=0)
+    fighter1_clinch_strikes_landed = models.PositiveIntegerField(default=0)
+    fighter1_clinch_strikes_attempted = models.PositiveIntegerField(default=0)
+    fighter1_ground_strikes_landed = models.PositiveIntegerField(default=0)
+    fighter1_ground_strikes_attempted = models.PositiveIntegerField(default=0)
+    
+    fighter2_distance_strikes_landed = models.PositiveIntegerField(default=0)
+    fighter2_distance_strikes_attempted = models.PositiveIntegerField(default=0)
+    fighter2_clinch_strikes_landed = models.PositiveIntegerField(default=0)
+    fighter2_clinch_strikes_attempted = models.PositiveIntegerField(default=0)
+    fighter2_ground_strikes_landed = models.PositiveIntegerField(default=0)
+    fighter2_ground_strikes_attempted = models.PositiveIntegerField(default=0)
     
     # Grappling statistics
-    fighter1_takedowns = models.PositiveIntegerField(default=0)
+    fighter1_takedowns_landed = models.PositiveIntegerField(default=0)
     fighter1_takedown_attempts = models.PositiveIntegerField(default=0)
-    fighter2_takedowns = models.PositiveIntegerField(default=0)
+    fighter1_takedown_accuracy = models.DecimalField(max_digits=5, decimal_places=2, default=0.0)
+    fighter1_takedowns_defended = models.PositiveIntegerField(default=0)
+    fighter1_takedown_defense = models.DecimalField(max_digits=5, decimal_places=2, default=0.0)
+    fighter1_submission_attempts = models.PositiveIntegerField(default=0)
+    fighter1_guard_passes = models.PositiveIntegerField(default=0)
+    fighter1_reversals = models.PositiveIntegerField(default=0)
+    
+    fighter2_takedowns_landed = models.PositiveIntegerField(default=0)
     fighter2_takedown_attempts = models.PositiveIntegerField(default=0)
+    fighter2_takedown_accuracy = models.DecimalField(max_digits=5, decimal_places=2, default=0.0)
+    fighter2_takedowns_defended = models.PositiveIntegerField(default=0)
+    fighter2_takedown_defense = models.DecimalField(max_digits=5, decimal_places=2, default=0.0)
+    fighter2_submission_attempts = models.PositiveIntegerField(default=0)
+    fighter2_guard_passes = models.PositiveIntegerField(default=0)
+    fighter2_reversals = models.PositiveIntegerField(default=0)
     
-    # Control time (in seconds)
-    fighter1_control_time = models.PositiveIntegerField(default=0)
-    fighter2_control_time = models.PositiveIntegerField(default=0)
+    # Control/Grappling time (in seconds)
+    fighter1_control_time = models.PositiveIntegerField(default=0, help_text="Total control time in seconds")
+    fighter1_ground_control_time = models.PositiveIntegerField(default=0)
+    fighter1_clinch_control_time = models.PositiveIntegerField(default=0)
+    fighter2_control_time = models.PositiveIntegerField(default=0, help_text="Total control time in seconds")
+    fighter2_ground_control_time = models.PositiveIntegerField(default=0)
+    fighter2_clinch_control_time = models.PositiveIntegerField(default=0)
     
-    # Additional detailed statistics
-    detailed_stats = models.JSONField(default=dict, blank=True)
+    # Advanced metrics
+    fighter1_knockdowns = models.PositiveIntegerField(default=0)
+    fighter2_knockdowns = models.PositiveIntegerField(default=0)
+    fighter1_significant_strike_accuracy = models.DecimalField(max_digits=5, decimal_places=2, default=0.0)
+    fighter2_significant_strike_accuracy = models.DecimalField(max_digits=5, decimal_places=2, default=0.0)
+    fighter1_strikes_absorbed_per_minute = models.DecimalField(max_digits=5, decimal_places=2, default=0.0)
+    fighter2_strikes_absorbed_per_minute = models.DecimalField(max_digits=5, decimal_places=2, default=0.0)
+    
+    # Source tracking
+    data_source = models.CharField(max_length=50, default='manual', 
+                                  help_text="Source of statistics (ufcstats, manual, etc.)")
+    source_url = models.URLField(blank=True, help_text="URL of source data")
+    
+    # Additional detailed statistics (for any extra data from scraping)
+    detailed_stats = models.JSONField(default=dict, blank=True, 
+                                     help_text="Additional statistics not covered by fields")
     json_data = models.TextField(blank=True, help_text="Paste JSON data here to import fight statistics")
     
     created_at = models.DateTimeField(auto_now_add=True)
@@ -455,20 +598,98 @@ class FightStatistics(models.Model):
     
     def __str__(self):
         return f"Stats: {self.fight}"
+    
+    def calculate_accuracies(self):
+        """Calculate and update accuracy percentages"""
+        # Fighter 1 accuracies
+        if self.fighter1_significant_strikes_attempted > 0:
+            self.fighter1_significant_strike_accuracy = round(
+                (self.fighter1_significant_strikes_landed / self.fighter1_significant_strikes_attempted) * 100, 2
+            )
+        if self.fighter1_takedown_attempts > 0:
+            self.fighter1_takedown_accuracy = round(
+                (self.fighter1_takedowns_landed / self.fighter1_takedown_attempts) * 100, 2
+            )
+        
+        # Fighter 2 accuracies
+        if self.fighter2_significant_strikes_attempted > 0:
+            self.fighter2_significant_strike_accuracy = round(
+                (self.fighter2_significant_strikes_landed / self.fighter2_significant_strikes_attempted) * 100, 2
+            )
+        if self.fighter2_takedown_attempts > 0:
+            self.fighter2_takedown_accuracy = round(
+                (self.fighter2_takedowns_landed / self.fighter2_takedown_attempts) * 100, 2
+            )
+        
+        # Calculate takedown defense
+        fighter1_faced = self.fighter2_takedown_attempts
+        if fighter1_faced > 0:
+            self.fighter1_takedown_defense = round(
+                ((fighter1_faced - self.fighter2_takedowns_landed) / fighter1_faced) * 100, 2
+            )
+        
+        fighter2_faced = self.fighter1_takedown_attempts
+        if fighter2_faced > 0:
+            self.fighter2_takedown_defense = round(
+                ((fighter2_faced - self.fighter1_takedowns_landed) / fighter2_faced) * 100, 2
+            )
+    
+    def save(self, *args, **kwargs):
+        """Override save to calculate accuracies"""
+        self.calculate_accuracies()
+        super().save(*args, **kwargs)
 
 
 class Scorecard(models.Model):
-    """Judge scorecards for decision fights"""
+    """Judge scorecards for decision fights - enhanced for comprehensive scoring data"""
+    
+    SCORING_SYSTEM_CHOICES = [
+        ('10_point', '10-Point Must System'),
+        ('pride', 'PRIDE Scoring'),
+        ('one_fc', 'ONE FC Scoring'),
+        ('custom', 'Custom Scoring System'),
+    ]
     
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     fight = models.ForeignKey(Fight, on_delete=models.CASCADE, related_name='scorecards')
     judge_name = models.CharField(max_length=100)
-    fighter1_score = models.PositiveIntegerField(default=0)
-    fighter2_score = models.PositiveIntegerField(default=0)
-    round_scores = models.JSONField(default=dict, help_text="Round-by-round scores as array")
+    
+    # Scoring system used
+    scoring_system = models.CharField(max_length=20, choices=SCORING_SYSTEM_CHOICES, default='10_point')
+    
+    # Total scores
+    fighter1_total_score = models.PositiveIntegerField(default=0)
+    fighter2_total_score = models.PositiveIntegerField(default=0)
+    
+    # Winner by this judge's card
+    scorecard_winner = models.ForeignKey(
+        Fighter, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='won_scorecards', help_text="Fighter who won on this scorecard"
+    )
+    
+    # Round scores stored as JSON array
+    # Format: [{"round": 1, "fighter1": 10, "fighter2": 9}, ...]
+    round_scores = models.JSONField(default=list, help_text="Round-by-round scores as array")
+    
+    # Point deductions
+    fighter1_point_deductions = models.PositiveIntegerField(default=0)
+    fighter2_point_deductions = models.PositiveIntegerField(default=0)
+    deduction_reasons = models.JSONField(default=list, blank=True,
+                                        help_text="List of deduction reasons with round numbers")
+    
+    # Additional scoring details
+    notes = models.TextField(blank=True, help_text="Judge's notes or comments")
+    is_split_decision = models.BooleanField(default=False, help_text="Part of a split decision")
+    
+    # Source tracking
+    data_source = models.CharField(max_length=50, default='manual',
+                                  help_text="Source of scorecard (mmadecisions, manual, etc.)")
+    source_url = models.URLField(blank=True, help_text="URL of source data")
+    
     json_data = models.TextField(blank=True, help_text="Paste JSON data here to import scorecard")
     
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
     
     class Meta:
         db_table = 'scorecards'
@@ -476,21 +697,60 @@ class Scorecard(models.Model):
         verbose_name_plural = 'Scorecards'
         indexes = [
             models.Index(fields=['fight'], name='idx_scorecards_fight'),
+            models.Index(fields=['judge_name'], name='idx_scorecards_judge'),
         ]
+        unique_together = [['fight', 'judge_name']]
     
     def __str__(self):
-        return f"{self.judge_name}: {self.fighter1_score}-{self.fighter2_score} - {self.fight}"
+        return f"{self.judge_name}: {self.fighter1_total_score}-{self.fighter2_total_score} - {self.fight}"
     
-    def get_total_rounds(self):
-        """Get total number of rounds from round details"""
-        return self.round_details.count()
+    def calculate_total_scores(self):
+        """Calculate total scores from round scores"""
+        fighter1_total = 0
+        fighter2_total = 0
+        
+        for round_score in self.round_scores:
+            fighter1_total += round_score.get('fighter1', 0)
+            fighter2_total += round_score.get('fighter2', 0)
+        
+        # Apply deductions
+        self.fighter1_total_score = fighter1_total - self.fighter1_point_deductions
+        self.fighter2_total_score = fighter2_total - self.fighter2_point_deductions
     
-    def get_round_summary(self):
-        """Get a summary of round-by-round scoring"""
+    def determine_winner(self):
+        """Determine the winner based on total scores"""
+        if self.fighter1_total_score > self.fighter2_total_score:
+            participants = self.fight.participants.all()
+            fighter1_participant = participants.filter(corner='red').first()
+            if fighter1_participant:
+                self.scorecard_winner = fighter1_participant.fighter
+        elif self.fighter2_total_score > self.fighter1_total_score:
+            participants = self.fight.participants.all()
+            fighter2_participant = participants.filter(corner='blue').first()
+            if fighter2_participant:
+                self.scorecard_winner = fighter2_participant.fighter
+        else:
+            self.scorecard_winner = None  # Draw on this card
+    
+    def get_round_by_round_display(self):
+        """Get formatted round-by-round scoring"""
+        if not self.round_scores:
+            return "No round scores available"
+        
         rounds = []
-        for round_detail in self.round_details.all():
-            rounds.append(f"R{round_detail.round_number}: {round_detail.fighter1_round_score}-{round_detail.fighter2_round_score}")
-        return " | ".join(rounds) if rounds else str(self.round_scores)
+        for round_data in self.round_scores:
+            round_num = round_data.get('round', 0)
+            f1_score = round_data.get('fighter1', 0)
+            f2_score = round_data.get('fighter2', 0)
+            rounds.append(f"R{round_num}: {f1_score}-{f2_score}")
+        
+        return " | ".join(rounds)
+    
+    def save(self, *args, **kwargs):
+        """Override save to calculate totals and determine winner"""
+        self.calculate_total_scores()
+        self.determine_winner()
+        super().save(*args, **kwargs)
 
 
 class RoundStatistics(models.Model):

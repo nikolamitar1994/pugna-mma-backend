@@ -1212,6 +1212,127 @@ class RankingHistory(models.Model):
             return f"↓{abs(self.rank_change)}"
 
 
+class ChampionshipHistory(models.Model):
+    """
+    Track championship reigns across all divisions and organizations.
+    Maintains a complete history of who held titles and when.
+    """
+    
+    TITLE_TYPE_CHOICES = [
+        ('undisputed', 'Undisputed Champion'),
+        ('interim', 'Interim Champion'),
+        ('tournament', 'Tournament Champion'),
+        ('inaugural', 'Inaugural Champion'),
+    ]
+    
+    END_REASON_CHOICES = [
+        ('lost', 'Lost Title'),
+        ('vacated', 'Vacated'),
+        ('stripped', 'Stripped'),
+        ('retired', 'Retired'),
+        ('unified', 'Unified'),
+        ('promoted', 'Promoted to Undisputed'),
+        ('active', 'Currently Active'),
+    ]
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    fighter = models.ForeignKey(Fighter, on_delete=models.CASCADE, related_name='championship_history')
+    organization = models.ForeignKey('organizations.Organization', on_delete=models.CASCADE)
+    weight_class = models.ForeignKey('organizations.WeightClass', on_delete=models.CASCADE)
+    
+    # Championship details
+    title_type = models.CharField(max_length=20, choices=TITLE_TYPE_CHOICES, default='undisputed')
+    reign_number = models.PositiveIntegerField(default=1, help_text="Which reign for this fighter (1st, 2nd, etc.)")
+    
+    # Reign timeline
+    start_date = models.DateField(help_text="Date championship was won")
+    end_date = models.DateField(null=True, blank=True, help_text="Date championship was lost/vacated")
+    is_current = models.BooleanField(default=False, help_text="Currently holding the title")
+    
+    # How they won/lost
+    won_from = models.ForeignKey(Fighter, on_delete=models.SET_NULL, null=True, blank=True,
+                                related_name='lost_title_to', help_text="Fighter they won the title from")
+    winning_fight = models.ForeignKey('events.Fight', on_delete=models.SET_NULL, null=True, blank=True,
+                                     related_name='title_won_in', help_text="Fight where title was won")
+    winning_method = models.CharField(max_length=100, blank=True, help_text="How they won (KO, Decision, etc.)")
+    
+    lost_to = models.ForeignKey(Fighter, on_delete=models.SET_NULL, null=True, blank=True,
+                               related_name='won_title_from', help_text="Fighter they lost the title to")
+    losing_fight = models.ForeignKey('events.Fight', on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name='title_lost_in', help_text="Fight where title was lost")
+    end_reason = models.CharField(max_length=20, choices=END_REASON_CHOICES, default='active')
+    
+    # Reign statistics
+    title_defenses = models.PositiveIntegerField(default=0, help_text="Successful title defenses")
+    days_as_champion = models.PositiveIntegerField(null=True, blank=True, help_text="Total days holding title")
+    
+    # Notable achievements during reign
+    notable_wins = models.JSONField(default=list, blank=True,
+                                   help_text="List of notable title defenses with fighter names and methods")
+    notes = models.TextField(blank=True, help_text="Additional notes about the championship reign")
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'championship_history'
+        verbose_name = 'Championship History'
+        verbose_name_plural = 'Championship Histories'
+        ordering = ['-start_date', 'organization', 'weight_class']
+        indexes = [
+            models.Index(fields=['organization', 'weight_class', '-start_date'], 
+                        name='idx_champ_hist_org_weight_date'),
+            models.Index(fields=['fighter'], name='idx_champ_hist_fighter'),
+            models.Index(fields=['is_current'], name='idx_champ_hist_current'),
+            models.Index(fields=['start_date'], name='idx_champ_hist_start'),
+            models.Index(fields=['end_date'], name='idx_champ_hist_end'),
+        ]
+    
+    def __str__(self):
+        status = "Current" if self.is_current else f"{self.start_date.year}-{self.end_date.year if self.end_date else '?'}"
+        return f"{self.fighter.get_full_name()} - {self.organization.abbreviation} {self.weight_class.name} Champion ({status})"
+    
+    def calculate_days_as_champion(self):
+        """Calculate the number of days as champion"""
+        if self.end_date:
+            return (self.end_date - self.start_date).days
+        elif self.is_current:
+            from django.utils import timezone
+            return (timezone.now().date() - self.start_date).days
+        return None
+    
+    def save(self, *args, **kwargs):
+        """Override save to calculate days as champion"""
+        self.days_as_champion = self.calculate_days_as_champion()
+        
+        # Ensure only one current champion per weight class/org
+        if self.is_current:
+            ChampionshipHistory.objects.filter(
+                organization=self.organization,
+                weight_class=self.weight_class,
+                is_current=True
+            ).exclude(pk=self.pk).update(is_current=False)
+        
+        super().save(*args, **kwargs)
+    
+    @classmethod
+    def get_current_champion(cls, organization, weight_class):
+        """Get the current champion for a specific division"""
+        return cls.objects.filter(
+            organization=organization,
+            weight_class=weight_class,
+            is_current=True
+        ).first()
+    
+    @classmethod
+    def get_division_lineage(cls, organization, weight_class):
+        """Get complete championship lineage for a division"""
+        return cls.objects.filter(
+            organization=organization,
+            weight_class=weight_class
+        ).select_related('fighter', 'won_from', 'lost_to').order_by('-start_date')
+
+
 class PendingFighter(models.Model):
     """
     Pending fighters discovered during scraping that don't exist in the database.
