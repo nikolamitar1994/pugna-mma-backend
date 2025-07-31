@@ -106,24 +106,44 @@ class FighterService:
     
     def _find_existing_fighter(self, fighter_data: Dict, event_date=None, 
                              context_data: Dict = None) -> Tuple[Optional[Fighter], float]:
-        """Find existing fighter using multiple matching strategies"""
+        """Find existing fighter using EXACT name matching only (no fuzzy matching for Wikipedia)"""
         
-        # Prepare context data
-        full_context = context_data or {}
-        full_context.update({
-            'nationality': fighter_data.get('nationality'),
-            'event_date': event_date
-        })
+        first_name = fighter_data['first_name'].strip()
+        last_name = fighter_data.get('last_name', '').strip()
         
-        # Use the existing FighterMatcher service
-        fighter, confidence = self.matcher.find_fighter_by_name(
-            first_name=fighter_data['first_name'],
-            last_name=fighter_data.get('last_name', ''),
-            event_date=event_date,
-            context_data=full_context
-        )
+        logger.info(f"🔍 Looking for exact match: '{first_name}' '{last_name}'")
         
-        return fighter, confidence
+        # For Wikipedia scraping, use EXACT matching only to avoid wrong matches
+        # like Piera Rodriguez -> Yair Rodriguez
+        try:
+            # Try exact match first
+            exact_match = Fighter.objects.filter(
+                first_name__iexact=first_name,
+                last_name__iexact=last_name
+            ).first()
+            
+            if exact_match:
+                logger.info(f"✅ Found exact name match: {exact_match.get_full_name()}")
+                return exact_match, 1.0
+            
+            # Try exact match with name variations
+            from fighters.models import FighterNameVariation
+            variation_match = FighterNameVariation.objects.filter(
+                first_name_variation__iexact=first_name,
+                last_name_variation__iexact=last_name
+            ).first()
+            
+            if variation_match:
+                logger.info(f"✅ Found name variation match: {variation_match.fighter.get_full_name()}")
+                return variation_match.fighter, 1.0
+            
+            # No exact match found
+            logger.info(f"🔍 No exact match found for: {first_name} {last_name}")
+            return None, 0.0
+            
+        except Exception as e:
+            logger.error(f"Error in exact fighter matching: {e}")
+            return None, 0.0
     
     def _check_wikipedia_url_duplicate(self, wikipedia_url: str) -> Optional[Fighter]:
         """Check if any fighter already has this Wikipedia URL"""
@@ -217,6 +237,20 @@ class FighterService:
             if full_name.lower() == fighter.get_full_name().lower():
                 return
             
+            # Prevent obviously wrong name variations (different first names)
+            scraped_first = scraped_data['first_name'].lower().strip()
+            fighter_first = fighter.first_name.lower().strip()
+            
+            # If first names are completely different, don't create variation
+            if scraped_first != fighter_first and not self._names_are_similar(scraped_first, fighter_first):
+                logger.warning(f"⚠️  Preventing bad name variation: '{full_name}' for {fighter.get_full_name()} - first names too different")
+                return
+            
+            # Additional check: if scraped name appears to be female and existing fighter appears male (or vice versa)
+            if self._appears_different_gender(scraped_first, fighter_first):
+                logger.warning(f"⚠️  Preventing bad name variation: '{full_name}' for {fighter.get_full_name()} - appear to be different genders")
+                return
+            
             # Check if variation already exists
             existing_variation = FighterNameVariation.objects.filter(
                 fighter=fighter,
@@ -237,6 +271,69 @@ class FighterService:
         
         except Exception as e:
             logger.debug(f"Error creating name variation: {e}")
+    
+    def _names_are_similar(self, name1: str, name2: str) -> bool:
+        """Check if two names are similar enough to be variations (e.g., Jon/Jonathan)"""
+        # Common name abbreviations and variations
+        similar_names = {
+            'jon': ['jonathan', 'johnny'],
+            'jonathan': ['jon', 'johnny'],
+            'johnny': ['jon', 'jonathan'],
+            'mike': ['michael'],
+            'michael': ['mike'],
+            'chris': ['christopher'],
+            'christopher': ['chris'],
+            'alex': ['alexander'],
+            'alexander': ['alex'],
+            'rob': ['robert'],
+            'robert': ['rob'],
+            'bill': ['william'],
+            'william': ['bill'],
+            'jim': ['james'],
+            'james': ['jim'],
+            'joe': ['joseph'],
+            'joseph': ['joe'],
+        }
+        
+        name1_lower = name1.lower().strip()
+        name2_lower = name2.lower().strip()
+        
+        # Check if names are in similar names mapping
+        similar_to_name1 = similar_names.get(name1_lower, [])
+        similar_to_name2 = similar_names.get(name2_lower, [])
+        
+        return (name2_lower in similar_to_name1 or 
+                name1_lower in similar_to_name2 or
+                name1_lower.startswith(name2_lower) or 
+                name2_lower.startswith(name1_lower))
+    
+    def _appears_different_gender(self, name1: str, name2: str) -> bool:
+        """Check if names appear to be different genders"""
+        # Common female names
+        female_names = {
+            'joselyne', 'angela', 'amanda', 'rose', 'ronda', 'miesha', 'holly', 'cris', 'cristiane', 
+            'valentina', 'weili', 'zhang', 'paige', 'carla', 'jessica', 'mackenzie', 'kayla',
+            'julianna', 'raquel', 'marina', 'tatiana', 'manon', 'luana', 'viviane', 'lauren',
+            'sarah', 'felice', 'alexa', 'katlyn', 'maycee', 'tabatha', 'gillian', 'cortney'
+        }
+        
+        # Common male names  
+        male_names = {
+            'leon', 'anthony', 'roman', 'andre', 'miles', 'eryk', 'julius', 'elijah', 'steve',
+            'uros', 'conor', 'daniel', 'jorge', 'dustin', 'justin', 'max', 'alexander', 'israel',
+            'kamaru', 'jon', 'stipe', 'francis', 'ciryl', 'derrick', 'curtis', 'chris', 'neil'
+        }
+        
+        name1_lower = name1.lower().strip()
+        name2_lower = name2.lower().strip()
+        
+        name1_female = name1_lower in female_names
+        name1_male = name1_lower in male_names
+        name2_female = name2_lower in female_names  
+        name2_male = name2_lower in male_names
+        
+        # If one appears clearly female and other clearly male, they're different genders
+        return ((name1_female and name2_male) or (name1_male and name2_female))
     
     def bulk_process_fighters(self, fighters_data: List[FighterInfoSchema], 
                             event_date=None) -> Dict[str, Any]:

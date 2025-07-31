@@ -185,6 +185,15 @@ class WikipediaGeminiScraper:
             # Extract results table with fighter links
             result.results_table_html = self._extract_results_table(soup)
             
+            # Extract announced bouts section (for upcoming events)
+            announced_bouts_html = self._extract_announced_bouts(soup)
+            if announced_bouts_html:
+                # Append announced bouts to results table HTML or create separate section
+                if result.results_table_html:
+                    result.results_table_html += "\n\n<!-- ANNOUNCED BOUTS SECTION -->\n" + announced_bouts_html
+                else:
+                    result.results_table_html = announced_bouts_html
+            
             # Extract bonus awards
             result.bonus_awards_html = self._extract_bonus_awards(soup)
             
@@ -291,6 +300,54 @@ class WikipediaGeminiScraper:
             
         except Exception as e:
             logger.debug(f"Error extracting results table: {e}")
+            return None
+    
+    def _extract_announced_bouts(self, soup: BeautifulSoup) -> Optional[str]:
+        """Extract announced bouts section from upcoming events"""
+        try:
+            # Look for "Announced bouts" section
+            announced_section = None
+            
+            # Search for headers containing "announced" or "bout"
+            headers = soup.find_all(['h2', 'h3', 'h4'])
+            for header in headers:
+                header_text = header.get_text().lower()
+                if any(term in header_text for term in ['announced', 'upcoming', 'scheduled bout', 'future bout']):
+                    # Get the section content after this header
+                    announced_section = self._get_section_content(header)
+                    break
+            
+            if not announced_section:
+                # Alternative: look for lists containing fight information
+                # Sometimes announced bouts are in unordered lists
+                lists = soup.find_all('ul')
+                for ul in lists:
+                    list_text = ul.get_text().lower()
+                    if 'bout:' in list_text or 'vs.' in list_text or 'vs' in list_text:
+                        # Check if this looks like fight announcements
+                        list_items = ul.find_all('li')
+                        fight_like_items = 0
+                        for li in list_items:
+                            li_text = li.get_text()
+                            if 'vs.' in li_text or 'vs' in li_text:
+                                fight_like_items += 1
+                        
+                        # If multiple items look like fights, include this list
+                        if fight_like_items >= 1:
+                            announced_section = ul
+                            break
+            
+            if announced_section:
+                # Preserve fighter links in announced bouts
+                self._preserve_fighter_links(announced_section)
+                logger.info("Found announced bouts section")
+                return str(announced_section)
+            else:
+                logger.debug("No announced bouts section found")
+                return None
+            
+        except Exception as e:
+            logger.debug(f"Error extracting announced bouts: {e}")
             return None
     
     def _extract_bonus_awards(self, soup: BeautifulSoup) -> Optional[str]:
@@ -408,7 +465,7 @@ class WikipediaGeminiScraper:
             return None
     
     def batch_scrape_events(self, event_urls: List[str], 
-                           batch_size: int = 5) -> List[ScrapingResultSchema]:
+                           batch_size: int = 5, max_retries: int = 2) -> List[ScrapingResultSchema]:
         """
         Scrape multiple UFC events in batches with rate limiting
         
@@ -429,22 +486,45 @@ class WikipediaGeminiScraper:
             logger.info(f"Processing batch {i//batch_size + 1} ({len(batch)} events)")
             
             for event_url in batch:
-                try:
-                    result = self.scrape_event_page(event_url)
-                    results.append(result)
-                    
-                    # Additional delay between events in same batch
-                    time.sleep(self.rate_limit_delay * 0.5)
-                    
-                except Exception as e:
-                    logger.error(f"Error processing {event_url}: {e}")
-                    # Create error result
+                success = False
+                last_error = None
+                
+                # Retry logic for failed events
+                for attempt in range(max_retries + 1):
+                    try:
+                        if attempt > 0:
+                            logger.info(f"Retry {attempt}/{max_retries} for {event_url}")
+                            # Longer delay for retries
+                            time.sleep(self.rate_limit_delay * 2)
+                        
+                        result = self.scrape_event_page(event_url)
+                        results.append(result)
+                        success = True
+                        
+                        if result.extraction_success:
+                            logger.info(f"✅ Successfully scraped: {result.event_title}")
+                        else:
+                            logger.warning(f"⚠️  Scraped but limited data: {result.event_title}")
+                        
+                        # Additional delay between events in same batch
+                        time.sleep(self.rate_limit_delay * 0.5)
+                        break
+                        
+                    except Exception as e:
+                        last_error = e
+                        logger.warning(f"Attempt {attempt + 1} failed for {event_url}: {e}")
+                        if attempt < max_retries:
+                            continue
+                
+                # If all retries failed, create error result
+                if not success:
+                    logger.error(f"❌ All {max_retries + 1} attempts failed for {event_url}: {last_error}")
                     error_result = ScrapingResultSchema(
                         event_url=event_url,
                         event_title="Error",
                         scraping_timestamp=datetime.now().isoformat(),
                         extraction_success=False,
-                        error_messages=[str(e)]
+                        error_messages=[f"All {max_retries + 1} attempts failed: {str(last_error)}"]
                     )
                     results.append(error_result)
             

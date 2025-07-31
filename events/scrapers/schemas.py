@@ -13,7 +13,7 @@ class FighterInfoSchema(BaseModel):
     nickname: Optional[str] = Field(default=None, description="Fighter's nickname without quotes")
     wikipedia_url: Optional[str] = Field(default=None, description="Full Wikipedia URL (convert relative URLs to absolute)")
     nationality: Optional[str] = Field(default=None, description="Fighter's nationality/country")
-    result: str = Field(..., description="Fight result: 'win', 'loss', 'draw', or 'no_contest'")
+    result: str = Field(default="", description="Fight result: 'win', 'loss', 'draw', 'no_contest', or empty string for upcoming fights")
 
 
 class BonusAwardSchema(BaseModel):
@@ -116,7 +116,13 @@ GEMINI_PROMPTS = {
     "event_extraction": """
 You are an expert MMA data extraction specialist. Extract structured UFC event data from the provided Wikipedia HTML sections.
 
+🔥 CRITICAL PRIORITY: EVENT NAME VARIATIONS 🔥
+FIRST AND MOST IMPORTANT: Extract event name variations from the first paragraph. Look for "also known as" text and extract ALL alternative names. This is MANDATORY for every event.
+
 IMPORTANT INSTRUCTIONS:
+🚨 CRITICAL NAME EXTRACTION: Extract fighter names EXACTLY as written in the Wikipedia table. Do NOT change, substitute, or "correct" any names. Use the PRECISE spelling from the source.
+🚨 EXAMPLE: If you see "Piera Rodríguez" in the table, extract "Piera" NOT "Yair" - these are completely different fighters!
+
 1. Extract fighter Wikipedia URLs from href attributes in fighter name cells
 2. Convert relative Wikipedia URLs (starting with /wiki/) to absolute URLs (https://en.wikipedia.org/wiki/...)
 3. Determine fight order based on table position (main event = 1, co-main = 2, etc.)
@@ -143,7 +149,7 @@ IMPORTANT INSTRUCTIONS:
      * "Submission (rear-naked choke)" becomes: method="Submission", method_details="rear-naked choke"
 9. Parse bonus awards carefully - multiple fighters can receive same award type
 
-Return the data in the exact JSON schema format provided.
+🚨 CRITICAL: Return VALID JSON ONLY. Ensure all strings are properly quoted and escaped. Test JSON validity before responding.
 """,
     
     "fighter_details": """

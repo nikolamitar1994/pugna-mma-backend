@@ -15,6 +15,7 @@ from events.scrapers.wikipedia_gemini_scraper import WikipediaGeminiScraper
 from events.scrapers.gemini_processor import GeminiProcessor
 from events.scrapers.data_importer import DataImporter
 from events.scrapers.schemas import UFCEventSchema
+from events.models import Event
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,40 @@ class Command(BaseCommand):
             type=str,
             help='Directory to save raw HTML files for debugging'
         )
+        
+        parser.add_argument(
+            '--max-retries',
+            type=int,
+            default=2,
+            help='Maximum retries for failed events (default: 2)'
+        )
+        
+        # Two-phase processing options
+        parser.add_argument(
+            '--from-database',
+            action='store_true',
+            help='Process events from database (Phase 2) instead of discovering from Wikipedia'
+        )
+        
+        parser.add_argument(
+            '--retry-failed',
+            action='store_true',
+            help='Retry processing failed events from database'
+        )
+        
+        parser.add_argument(
+            '--max-attempts',
+            type=int,
+            default=3,
+            help='Maximum processing attempts per event (default: 3)'
+        )
+        
+        parser.add_argument(
+            '--processing-status',
+            choices=['discovered', 'processing', 'failed'],
+            default='discovered',
+            help='Process events with specific status (default: discovered)'
+        )
     
     def handle(self, *args, **options):
         """Main command handler"""
@@ -149,7 +184,10 @@ class Command(BaseCommand):
                 )
             
             # Step 1: Get event URLs to scrape
-            event_urls = self._get_event_urls(scraper, options)
+            if options['from_database'] or options['retry_failed']:
+                event_urls = self._get_events_from_database(options)
+            else:
+                event_urls = self._get_event_urls(scraper, options)
             
             if not event_urls:
                 raise CommandError("No event URLs found to scrape")
@@ -162,7 +200,8 @@ class Command(BaseCommand):
             self.stdout.write('Scraping Wikipedia pages...')
             scraped_results = scraper.batch_scrape_events(
                 [url for _, url in event_urls],
-                batch_size=options['batch_size']
+                batch_size=options['batch_size'],
+                max_retries=options['max_retries']
             )
             
             # Save HTML if requested
@@ -182,10 +221,35 @@ class Command(BaseCommand):
             
             # Step 3: Process with Gemini AI
             self.stdout.write('Processing with Gemini AI...')
-            processed_events = processor.batch_process_events(successful_scrapes)
+            
+            if options['from_database'] or options['retry_failed']:
+                # Individual processing with status updates for Phase 2
+                processed_events = self._process_events_with_status_updates(
+                    successful_scrapes, processor, options
+                )
+            else:
+                # Batch processing for Phase 1 (backward compatibility)
+                processed_events = processor.batch_process_events(successful_scrapes)
             
             if not processed_events:
+                if len(successful_scrapes) > 10:  # If we had many scraped events but none processed
+                    self.stdout.write(
+                        self.style.ERROR(
+                            f"Warning: {len(successful_scrapes)} events scraped but none processed by Gemini. "
+                            f"Check Gemini API key and rate limits."
+                        )
+                    )
                 raise CommandError("No events were successfully processed by Gemini")
+            
+            elif len(processed_events) < len(successful_scrapes):
+                # Some events processed, some failed - continue with what we have
+                failed_count = len(successful_scrapes) - len(processed_events)
+                self.stdout.write(
+                    self.style.WARNING(
+                        f"Warning: {failed_count} events failed Gemini processing. "
+                        f"Continuing with {len(processed_events)} successful events."
+                    )
+                )
             
             self.stdout.write(
                 self.style.SUCCESS(
@@ -257,6 +321,134 @@ class Command(BaseCommand):
             event_urls.sort(key=lambda x: x[1], reverse=True)
         
         return event_urls
+    
+    def _get_events_from_database(self, options) -> List[tuple]:
+        """Get events from database for Phase 2 processing"""
+        
+        # Determine which events to process
+        if options['retry_failed']:
+            # Retry failed events
+            status_filter = 'failed'
+            max_attempts = options['max_attempts']
+            events = Event.objects.filter(
+                processing_status=status_filter,
+                processing_attempts__lt=max_attempts
+            ).order_by('-date', 'name')
+            
+            self.stdout.write(f"Found {events.count()} failed events to retry (attempts < {max_attempts})")
+            
+        else:
+            # Process events with specified status
+            status_filter = options['processing_status']
+            events = Event.objects.filter(
+                processing_status=status_filter
+            ).order_by('-date', 'name')
+            
+            self.stdout.write(f"Found {events.count()} events with status '{status_filter}'")
+        
+        # Apply limit if specified
+        if options['events'] > 0:
+            events = events[:options['events']]
+            self.stdout.write(f"Limited to {options['events']} events")
+        
+        # Convert to the expected format: (event_name, wikipedia_url)
+        event_urls = []
+        for event in events:
+            if event.wikipedia_url:
+                event_urls.append((event.name, event.wikipedia_url))
+            else:
+                self.stdout.write(
+                    self.style.WARNING(f"Skipping {event.name} - no Wikipedia URL")
+                )
+        
+        return event_urls
+    
+    def _process_events_with_status_updates(self, scraped_results, processor, options):
+        """Process events individually with database status updates (Phase 2)"""
+        from django.db import transaction
+        from django.utils import timezone
+        
+        processed_events = []
+        total_events = len(scraped_results)
+        
+        for i, scraped_data in enumerate(scraped_results, 1):
+            # Find the corresponding Event record
+            try:
+                event = Event.objects.get(
+                    name__iexact=scraped_data.event_title,
+                    wikipedia_url=scraped_data.event_url
+                )
+            except Event.DoesNotExist:
+                self.stdout.write(
+                    self.style.WARNING(f"Event not found in database: {scraped_data.event_title}")
+                )
+                continue
+            except Event.MultipleObjectsReturned:
+                event = Event.objects.filter(
+                    name__iexact=scraped_data.event_title,
+                    wikipedia_url=scraped_data.event_url
+                ).first()
+            
+            # Update status to 'processing'
+            with transaction.atomic():
+                event.processing_status = 'processing'
+                event.processing_attempts += 1
+                event.last_processed_at = timezone.now()
+                event.save()
+            
+            self.stdout.write(
+                f"Processing event {i}/{total_events}: {event.name} (attempt {event.processing_attempts})"
+            )
+            
+            try:
+                # Process the event
+                ufc_event = processor.process_scraped_event(scraped_data)
+                
+                if ufc_event:
+                    processed_events.append(ufc_event)
+                    
+                    # Update status to 'completed'
+                    with transaction.atomic():
+                        event.processing_status = 'completed'
+                        event.last_processing_error = ''
+                        event.save()
+                    
+                    self.stdout.write(
+                        self.style.SUCCESS(f"✅ Successfully processed: {event.name}")
+                    )
+                else:
+                    # Processing failed
+                    error_msg = "Gemini processing returned None"
+                    
+                    with transaction.atomic():
+                        event.processing_status = 'failed'
+                        event.last_processing_error = error_msg
+                        event.save()
+                    
+                    self.stdout.write(
+                        self.style.ERROR(f"❌ Processing failed: {event.name} - {error_msg}")
+                    )
+                    
+            except Exception as e:
+                # Processing failed with exception
+                error_msg = str(e)
+                
+                with transaction.atomic():
+                    event.processing_status = 'failed'
+                    event.last_processing_error = error_msg
+                    event.save()
+                
+                self.stdout.write(
+                    self.style.ERROR(f"❌ Processing failed: {event.name} - {error_msg}")
+                )
+                logger.error(f"Error processing {event.name}: {e}")
+            
+            # Add small delay between events to be respectful
+            if i < total_events:
+                import time
+                time.sleep(1.0)
+        
+        return processed_events
     
     def _save_html_files(self, scraped_results, html_dir: str):
         """Save raw HTML files for debugging"""

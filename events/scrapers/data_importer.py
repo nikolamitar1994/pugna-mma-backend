@@ -41,6 +41,38 @@ def clean_text_field(text: str, max_length: int = 255) -> str:
     return cleaned
 
 
+def clean_fight_section(section: str) -> str:
+    """Clean fight section name by removing broadcast network suffixes"""
+    if not section:
+        return ''
+    
+    # Remove all broadcast network suffixes - more comprehensive patterns
+    broadcast_patterns = [
+        r'\s*\([^)]*ESPN[^)]*\)',           # Any parentheses containing ESPN
+        r'\s*\([^)]*PPV[^)]*\)',            # Any parentheses containing PPV
+        r'\s*\([^)]*Fight Pass[^)]*\)',     # Any parentheses containing Fight Pass
+        r'\s*\([^)]*Fox[^)]*\)',            # Any parentheses containing Fox
+        r'\s*\([^)]*FS1[^)]*\)',            # Any parentheses containing FS1
+        r'\s*\([^)]*FX[^)]*\)',             # Any parentheses containing FX
+        r'\s*\([^)]*ESPNews[^)]*\)',        # Any parentheses containing ESPNews
+        r'\s*\([^)]*ESPN2[^)]*\)',          # Any parentheses containing ESPN2
+        r'\s*\([^)]*Spike[^)]*\)',          # Any parentheses containing Spike
+        r'\s*\([^)]*Versus[^)]*\)',         # Any parentheses containing Versus
+        r'\s*\([^)]*WEC[^)]*\)',            # Any parentheses containing WEC
+        r'\s*\([^)]*UFC TV[^)]*\)',         # Any parentheses containing UFC TV
+    ]
+    
+    cleaned = section.strip()
+    for pattern in broadcast_patterns:
+        cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+    
+    # Clean up any remaining whitespace and trailing commas
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    cleaned = re.sub(r',\s*$', '', cleaned)  # Remove trailing commas
+    
+    return cleaned
+
+
 class DataImporter:
     """Service for importing UFC Wikipedia data into Django models"""
     
@@ -257,11 +289,19 @@ class DataImporter:
     
     def _import_event_name_variations(self, event: Event, name_variations: List[str]):
         """Import event name variations"""
-        for variation in name_variations:
+        logger.info(f"Event name variations received from Gemini: {name_variations}")
+        logger.info(f"Total variations: {len(name_variations)}")
+        
+        if not name_variations:
+            logger.warning("No name variations provided by Gemini!")
+            return
+            
+        for i, variation in enumerate(name_variations):
+            logger.info(f"  Variation {i+1}: '{variation}'")
             if variation.strip() and variation != event.name:
                 try:
                     if not self.dry_run:
-                        EventNameVariation.objects.get_or_create(
+                        variation_obj, created = EventNameVariation.objects.get_or_create(
                             event=event,
                             name_variation=variation.strip(),
                             defaults={
@@ -269,11 +309,20 @@ class DataImporter:
                                 'source': 'wikipedia_scraper'
                             }
                         )
-                    
-                    logger.debug(f"Added name variation: {variation}")
+                        if created:
+                            logger.info(f"  ✅ Created name variation: {variation}")
+                        else:
+                            logger.info(f"  ⏭️ Name variation already exists: {variation}")
+                    else:
+                        logger.info(f"  [DRY RUN] Would create name variation: {variation}")
                     
                 except Exception as e:
                     logger.warning(f"Error adding name variation '{variation}': {e}")
+            else:
+                if variation == event.name:
+                    logger.info(f"  ⏭️ Skipping variation identical to main name: {variation}")
+                else:
+                    logger.info(f"  ⏭️ Skipping empty variation: '{variation}'")
     
     def _import_fights(self, event: Event, fights_data: List[FightResultSchema]) -> Dict[str, Any]:
         """Import fight data"""
@@ -319,22 +368,48 @@ class DataImporter:
             
             # Determine winner
             winner = None
-            if fight_data.winner_name:
+            
+            # Debug logging for winner determination
+            logger.info(f"Fight {fight_data.fight_order}: {fighter1.get_full_name()} vs {fighter2.get_full_name()}")
+            logger.info(f"  Winner name from Gemini: '{fight_data.winner_name}'")
+            logger.info(f"  Fighter1 result: '{fight_data.fighter1.result}'")
+            logger.info(f"  Fighter2 result: '{fight_data.fighter2.result}'")
+            
+            # Check if this is an upcoming fight (no results yet)
+            is_upcoming_fight = (
+                not fight_data.fighter1.result or fight_data.fighter1.result.strip() == '' or
+                not fight_data.fighter2.result or fight_data.fighter2.result.strip() == '' or
+                not fight_data.method or fight_data.method.strip() == ''
+            )
+            
+            if is_upcoming_fight:
+                logger.info(f"  This is an upcoming/scheduled fight - no winner assigned")
+            elif fight_data.winner_name:
                 if fight_data.winner_name.lower() in fighter1.get_full_name().lower():
                     winner = fighter1
+                    logger.info(f"  Winner assigned via winner_name: {fighter1.get_full_name()}")
                 elif fight_data.winner_name.lower() in fighter2.get_full_name().lower():
                     winner = fighter2
+                    logger.info(f"  Winner assigned via winner_name: {fighter2.get_full_name()}")
+                else:
+                    logger.warning(f"  Winner name '{fight_data.winner_name}' doesn't match either fighter!")
             elif fight_data.fighter1.result == 'win':
                 winner = fighter1
+                logger.info(f"  Winner assigned via fighter1.result: {fighter1.get_full_name()}")
             elif fight_data.fighter2.result == 'win':
                 winner = fighter2
+                logger.info(f"  Winner assigned via fighter2.result: {fighter2.get_full_name()}")
+            else:
+                logger.warning(f"  No winner could be determined! Method: {fight_data.method}")
+            
+            logger.info(f"  Final winner: {winner.get_full_name() if winner else 'None (upcoming fight)' if is_upcoming_fight else 'None'}")
             
             # Create fight
             fight_fields = {
                 'event': event,
                 'weight_class': weight_class,
                 'fight_order': fight_data.fight_order,
-                'fight_section': clean_text_field(fight_data.fight_section or '', 100),
+                'fight_section': clean_fight_section(fight_data.fight_section or ''),
                 'is_main_event': fight_data.is_main_event,
                 'is_title_fight': fight_data.is_title_fight,
                 'scheduled_rounds': fight_data.scheduled_rounds,

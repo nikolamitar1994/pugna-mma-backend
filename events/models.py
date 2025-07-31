@@ -41,6 +41,34 @@ class Event(models.Model):
     poster_url = models.URLField(blank=True)
     wikipedia_url = models.URLField(blank=True)
     
+    # Processing status for two-phase scraping
+    PROCESSING_STATUS_CHOICES = [
+        ('discovered', 'Discovered'),
+        ('processing', 'Processing'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+    ]
+    
+    processing_status = models.CharField(
+        max_length=20, 
+        choices=PROCESSING_STATUS_CHOICES, 
+        default='discovered',
+        help_text="Status of Wikipedia scraping and data processing"
+    )
+    processing_attempts = models.PositiveIntegerField(
+        default=0,
+        help_text="Number of processing attempts made"
+    )
+    last_processing_error = models.TextField(
+        blank=True,
+        help_text="Last error message from processing attempt"
+    )
+    last_processed_at = models.DateTimeField(
+        null=True, 
+        blank=True,
+        help_text="Timestamp of last processing attempt"
+    )
+    
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
@@ -53,6 +81,8 @@ class Event(models.Model):
             models.Index(fields=['-date'], name='idx_events_date'),
             models.Index(fields=['organization'], name='idx_events_organization'),
             models.Index(fields=['status'], name='idx_events_status'),
+            models.Index(fields=['processing_status'], name='idx_events_processing_status'),
+            models.Index(fields=['processing_status', '-date'], name='idx_events_processing_date'),
         ]
     
     def __str__(self):
